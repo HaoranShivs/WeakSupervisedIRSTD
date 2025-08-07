@@ -1,0 +1,19 @@
+{
+    "black-formatter.args": [
+    "--line-length",
+    "120"
+],
+"cSpell.ignoreWords": [
+    "Nrom"
+],
+"cSpell.words": [
+    "dtype",
+    "IRSTD",
+    "ISTD",
+    "kernnel",
+    "optim",
+    "sobel",
+    "Sobel",
+    "trainset"
+]
+}

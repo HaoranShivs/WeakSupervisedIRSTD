@@ -1,0 +1,33 @@
+resconv_outchannel: 16
+multiscalefeature_outchannel: 
+- 16
+- 32
+- 48
+- 80
+- 112
+multiscalefeature_channellist: 
+- 1
+- 8
+- 16
+- 32
+- 64
+- 128
+- 256
+gauss_sigma: 0.6
+gauss_tempreture: 2.5
+gauss_kernelsize: 3
+featurefusion_outchannel: 32 
+noise_filter_threshold: 0.1
+background_aug_threshold: 0.5
+multiscale_recov_loss_weight: 
+- 1
+
+learning_conv_outchannel: 16
+
+heatmap_activation_threshold: 0.5
+target_detection_size: 32
+label_vague_threshold: 0.1
+
+epoch_num_modify_pseudo_label: 200
+
+cycle_num: 10
