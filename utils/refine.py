@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
-from utils.utils import extract_local_windows
+from utils.utils import extract_local_windows, dilate_mask, erode_mask
 
 torch.set_printoptions(
     precision=4,
@@ -12,25 +12,6 @@ torch.set_printoptions(
     sci_mode=True,
     profile="compact",
 )
-
-
-def dilate_mask(mask, d=2):
-    kernel_size = 2 * d + 1
-    weight = torch.ones(1, 1, kernel_size, kernel_size, device=mask.device)
-    mask = mask.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
-    mask = mask.float()
-    dilated = F.conv2d(mask, weight, padding=kernel_size // 2)
-    dilated = (dilated > 0).float().squeeze()
-    return dilated
-
-def erode_mask(mask, d=2):
-    kernel_size = 2 * d + 1
-    weight = torch.ones(1, 1, kernel_size, kernel_size, device=mask.device)
-    mask = mask.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
-    # 腐蚀等价于卷积后判断是否等于 kernel 中元素数量
-    eroded = F.conv2d(mask, weight, padding=kernel_size // 2)
-    eroded = (eroded == kernel_size * kernel_size).float().squeeze()
-    return eroded
 
 def get_verified_region(seed_mask, dilate_iter=1, erode_iter=1, return_erode_mask=False):
     seed_mask = seed_mask.float()

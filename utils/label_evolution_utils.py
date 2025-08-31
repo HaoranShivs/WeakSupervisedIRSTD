@@ -15,7 +15,7 @@ def proper_region(pred, c1, c2):
         s2 (int): 区域的起始宽度索引。
         e2 (int): 区域的结束宽度索引。
     """
-    initial_size = 32
+    initial_size = 48
     half_size = initial_size // 2
     pred_ = F.pad(pred, [half_size, half_size, half_size, half_size], value=0)
     s1 = c1
@@ -27,22 +27,22 @@ def proper_region(pred, c1, c2):
     # 合适上边界
     for i in range(half_size, mini_size//2, -1):
         s1 = c1 + half_size - i
-        if torch.max(pred_[s1, s2:e2]) > 0.1:
+        if torch.sum(pred_[s1, s2:e2]) > 1.:
             break
     # 下边界
     for i in range(half_size, mini_size//2, -1):
         e1 = c1 + half_size + i
-        if torch.max(pred_[e1, s2:e2]) > 0.1:
+        if torch.sum(pred_[e1, s2:e2]) > 1.0:
             break
     # 左边界
     for i in range(half_size, mini_size//2, -1):
         s2 = c2 + half_size - i
-        if torch.max(pred_[s1:e1, s2]) > 0.1:
+        if torch.sum(pred_[s1:e1, s2]) > 1.0:
             break
     # 右边界
     for i in range(half_size, mini_size//2, -1):
         e2 = c2 + half_size + i
-        if torch.max(pred_[s1:e1, e2]) > 0.1:
+        if torch.sum(pred_[s1:e1, e2]) > 1.0:
             break
     
     s1 = s1 - half_size - extend_size if s1 - half_size - extend_size > 1 else 1
@@ -97,6 +97,34 @@ def smooth_and_scale_mask(mask, a=0.1, b=0.9, sigma=None, kernel_size=None):
     x_scaled = a + (mask - x_min) * (b - a) / (x_max - x_min + 1e-8)  # 加上小数防止除零
 
     return x_scaled
+
+
+def create_fading_tensor(H, W):
+    """
+    生成一个形状为 [H, W] 的 PyTorch 张量，
+    值从中心 (1.0) 向四周逐渐衰减到 0。
+    使用归一化的欧氏距离实现。
+    """
+    # 创建坐标网格
+    y = torch.linspace(0, H - 1, H)
+    x = torch.linspace(0, W - 1, W)
+    yy, xx = torch.meshgrid(y, x, indexing='ij')  # 注意：PyTorch 1.10+ 推荐使用 indexing='ij'
+
+    # 中心点坐标
+    center_y, center_x = (H - 1) / 2, (W - 1) / 2
+
+    # 计算每个点到中心的欧氏距离
+    dist = torch.sqrt((xx - center_x)**2 + (yy - center_y)**2)
+
+    # 归一化距离到 [0, max_dist] 范围，然后反向映射到 [1, 0]
+    max_dist = torch.sqrt(torch.tensor(center_x**2 + center_y**2)) / 2  # 最大可能距离（从中心到角落）
+    normalized_dist = dist / max_dist
+
+    # 衰减函数：1 - distance，确保范围在 [0, 1]
+    tensor = 1.0 - normalized_dist.clamp(0, 1)
+
+    return tensor
+
 
 def fusion_tm_dl(target, pred, alpha=0.5, beta=0.75, sigma=0.9):
     """

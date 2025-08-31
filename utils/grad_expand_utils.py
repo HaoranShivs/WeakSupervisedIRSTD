@@ -164,7 +164,7 @@ def img_gradient5(image_batch):
 
 def local_max_gradient(tensor):
     """
-    对形状为 (B, C, S, S) 的张量进行高斯滤波。
+    对形状为 (B, C, S, S) 的张量进行搜寻局部最大值。
 
     参数:
     tensor -- 输入张量

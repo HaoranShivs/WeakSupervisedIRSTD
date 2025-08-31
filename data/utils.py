@@ -288,7 +288,7 @@ def mask2point(mask, img, offset=3):
         brightness = masked_img_vals.flatten()
 
         # 找出最亮部分的像素
-        threshold = np.percentile(brightness, 20)
+        threshold = np.percentile(brightness, 50)
         bright_coords = masked_coords[brightness >= threshold]
 
         # 如果没有亮点，跳过

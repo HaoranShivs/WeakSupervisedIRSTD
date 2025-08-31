@@ -1,0 +1,1 @@
+python pseudo_label_generate.py --dataset nudt --save-folder 2.99 --last-turnnum 1.35 --model-path result/20250828T18-31-57_ws4.1_1.35_nudt --debug 1

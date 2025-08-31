@@ -292,14 +292,14 @@ def filter_mask_by_points(mask: torch.Tensor, points: torch.Tensor, kernel_size=
     根据点标签过滤 mask, 保留与点标签相重合的 mask 区域。
     
     参数:
-        mask (np.Array): 形状为 (H, W) 的二值张量，表示生成的 mask 标签。
-        points (np.Array): 形状为 (H, W) 的张量。
+        mask (torch.Tensor): 形状为 (H, W) 的二值张量，表示生成的 mask 标签。
+        points (torch.Tensor): 形状为 (H, W) 的张量。
     
     返回:
-        filtered_mask (np.Array): 过滤后的 mask, 形状为 (H, W)。
+        filtered_mask (torch.Tensor): 过滤后的 mask, 形状为 (H, W)。
     """
     # 扩展 mask 1 个像素，一边提高容忍性
-    points = F.max_pool2d(points.float().unsqueeze(0).unsqueeze(0), kernel_size=kernel_size, stride=1, padding=3).squeeze(0).squeeze(0)
+    points = F.max_pool2d(points.float().unsqueeze(0).unsqueeze(0), kernel_size=kernel_size, stride=1, padding=kernel_size//2).squeeze(0).squeeze(0)
     # 将 mask 转换为 numpy 数组以使用 scipy 的连通区域标记功能
     mask_np = mask.cpu().numpy()
     points_np = points.cpu().numpy()
@@ -416,5 +416,63 @@ def mapping_4_crf_v3(tensor, grad_intensity, ratio=0.5, max_val=0.5001, min_val=
     area_min, area_max = grad_intensity_area[grad_intensity_area > 0.].min(), grad_intensity_area.max()
     grad_intensity_area = (grad_intensity_area-area_min) * (max_val-min_val)/(area_max-area_min) + min_val
     output = torch.where((grad_intensity_area > output)*medium_mask, grad_intensity_area, output)
+
+    return output
+
+def mapping_4_crf_v4(tensor, grad_intensity, ratio=0.5, node_list=[0.8, 0.6, 0.4, 0.2]):
+    output = torch.zeros_like(tensor)
+
+    tensor = torch.round(tensor * 10000) / 10000
+    unique_val = torch.unique(tensor)   # 默认返回排序后得结果
+    max_min_num = int(ratio * unique_val.shape[0])
+    max_min_num = max_min_num if max_min_num >= 1 else 1
+    
+    max_val = node_list[0]
+    maximum_mask = torch.isin(tensor, unique_val[-max_min_num:])
+    grad_intensity_area = grad_intensity * maximum_mask
+    area_min, area_max = grad_intensity_area[grad_intensity_area > 0.].min(), grad_intensity_area.max()
+    grad_intensity_area = (grad_intensity_area-area_min) * (1-max_val)/(area_max - area_min) + max_val
+    output = torch.where((grad_intensity_area > output)*maximum_mask, grad_intensity_area, output)
+
+    min_val = node_list[3]
+    minimum_mask = torch.isin(tensor, unique_val[:max_min_num])
+    grad_intensity_area = grad_intensity * minimum_mask
+    area_min, area_max = grad_intensity_area[grad_intensity_area > 0.].min(), grad_intensity_area.max()
+    grad_intensity_area = (grad_intensity_area-area_min) * min_val/(area_max-area_min)
+    output = torch.where((grad_intensity_area > output)*minimum_mask, grad_intensity_area, output)
+    
+    if unique_val.shape[0] <= 2:  # 确保至少有 2 个值
+        return output
+
+    max_val, min_val = node_list[1], node_list[2]
+    medium_mask = torch.isin(tensor, unique_val[max_min_num:-max_min_num])
+    grad_intensity_area = grad_intensity * medium_mask
+    area_min, area_max = grad_intensity_area[grad_intensity_area > 0.].min(), grad_intensity_area.max()
+    grad_intensity_area = (grad_intensity_area-area_min) * (max_val-min_val)/(area_max-area_min) + min_val
+    output = torch.where((grad_intensity_area > output)*medium_mask, grad_intensity_area, output)
+
+    return output
+
+def mapping_4_crf_v5(tensor, grad_intensity, ratio=0.5, node_list=[0.7, 0.5]):
+    output = torch.zeros_like(tensor)
+
+    tensor = torch.round(tensor * 10000) / 10000
+    unique_val = torch.unique(tensor)   # 默认返回排序后得结果
+    max_min_num = int(ratio * unique_val.shape[0])
+    max_min_num = max_min_num if max_min_num >= 1 else 1
+    
+    max_val = node_list[0]
+    maximum_mask = torch.isin(tensor, unique_val[-max_min_num:])
+    grad_intensity_area = grad_intensity * maximum_mask
+    area_min, area_max = grad_intensity_area[grad_intensity_area > 0.].min(), grad_intensity_area.max()
+    grad_intensity_area = (grad_intensity_area-area_min) * (1-max_val)/(area_max - area_min) + max_val
+    output = torch.where((grad_intensity_area > output)*maximum_mask, grad_intensity_area, output)
+
+    min_val = node_list[1]
+    minimum_mask = ~maximum_mask
+    grad_intensity_area = grad_intensity * minimum_mask
+    area_min, area_max = grad_intensity_area[grad_intensity_area > 0.].min(), grad_intensity_area.max()
+    grad_intensity_area = (grad_intensity_area-area_min) * min_val/(area_max-area_min)
+    output = torch.where((grad_intensity_area > output)*minimum_mask, grad_intensity_area, output)
 
     return output

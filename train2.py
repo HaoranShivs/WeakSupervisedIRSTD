@@ -143,9 +143,9 @@ class Trainer(object):
             raise NotImplementedError
             
         if args.valset == 0:
-            val_indices, train_indices = split_indices_by_mod(0, len(trainset)-1, 3, 0)
+            val_indices, train_indices = split_indices_by_mod(0, len(trainset)-1, 3, 1)
             # 划分
-            trainset, valset = Data.Subset(trainset, train_indices), Data.Subset(valset, val_indices)
+            trainset, valset = Data.Subset(trainset, train_indices), Data.Subset(trainset, val_indices)
 
         self.train_data_loader = Data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, pin_memory=True, num_workers=1)
         self.val_data_loader = Data.DataLoader(valset, batch_size=args.batch_size, shuffle=False, drop_last=False, num_workers=1)
@@ -303,6 +303,8 @@ class Trainer(object):
         if miou_all > self.best_miou:
             self.best_miou = miou_all
             torch.save(self.net.state_dict(), osp.join(self.args.save_folder, "best.pkl"))
+            save_name = f'new_best_iou_{self.best_miou:.4f}.pkl'
+            torch.save(self.net.state_dict(), osp.join(self.args.save_folder, "best.pkl"))
         if fmeasure_all > self.best_fmeasure:
             self.best_fmeasure = fmeasure_all
         if prec_all > self.best_prec:
@@ -337,7 +339,7 @@ if __name__ == "__main__":
     args = parse_args()
 
     trainer = Trainer(args)
-    trainer.load_model(args.model_path, args.model_path1, args.model_path2)
+    trainer.load_model(args.model_path)
     trainer.training()
 
     # print('Best mIoU: %.5f, Best Fmeasure: %.5f\n\n' % (trainer.best_miou, trainer.best_fmeasure))
