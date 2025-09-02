@@ -1409,34 +1409,71 @@ def compute_weighted_mean_variance(logits: torch.Tensor, mask: torch.Tensor, top
     self_in_mask = mask.bool()  # (H, W)
 
     # 所有点到 mask 点的距离: (H, W, N)
-    all_dists = torch.cdist(coords.view(H*W, 2), mask_coords.unsqueeze(0)).view(H, W, N)  # (H, W, N)
+    all_dists = torch.cdist(coords.view(H*W, 2), mask_coords.unsqueeze(0)).view(H, W, N)
 
-    # 确定输出维度
-    k_use = N if top_k is None else min(top_k, N)
+    # === 正确处理 top_k，即使 k > N ===
     k_pad = top_k if top_k is not None else N
+    k_use = min(k_pad, N) if top_k is not None else N
 
-    # 如果 N < k_pad，padding inf
-    if N < k_pad:
-        pad_size = k_pad - N
-        padded_dists = torch.cat([all_dists, all_dists.new_full((H, W, pad_size), float('inf'))], dim=-1)
-    else:
-        padded_dists = all_dists
+    # 1. 先对 all_dists 做 topk，限制 k_use <= N
+    topk_dists_full, topk_indices_full = torch.topk(all_dists, k_use, dim=-1, largest=False)  # (H, W, k_use)
 
-    # 获取 top-k 最近点的 indices 和 distances
-    topk_dists, topk_indices = torch.topk(padded_dists, k_pad, dim=-1, largest=False)  # (H, W, k_pad)
+    # 2. Gather 对应的 logits
+    # mask_logits_vals: (N,)
+    topk_logits = torch.gather(
+        mask_logits_vals.unsqueeze(0).unsqueeze(0).expand(H, W, N),
+        dim=-1,
+        index=topk_indices_full
+    )  # (H, W, k_use)
 
-    # 获取对应的 logits 值
-    if N < k_pad:
-        padded_logits = torch.cat([
-            mask_logits_vals.unsqueeze(0).unsqueeze(0).expand(H, W, N),
-            mask_logits_vals.new_zeros(H, W, pad_size)
+    # 3. 如果需要 padding 到 k_pad，才进行 pad
+    if k_use < k_pad:
+        pad_size = k_pad - k_use
+        # Pad distances with inf
+        topk_dists = torch.cat([topk_dists_full, topk_dists_full.new_full((H, W, pad_size), float('inf'))], dim=-1)  # (H, W, k_pad)
+        # Pad logits with 0 (won't affect due to weight=0)
+        topk_logits = torch.cat([topk_logits, topk_logits.new_zeros(H, W, pad_size)], dim=-1)
+        # Pad indices: 用 -1 表示无效，或者随便填（不重要）
+        topk_indices = torch.cat([topk_indices_full, topk_indices_full.new_full((H, W, pad_size), -1)], dim=-1)
+        valid_mask = torch.cat([
+            torch.ones_like(topk_indices_full, dtype=torch.bool),
+            torch.zeros(H, W, pad_size, dtype=torch.bool, device=device)
         ], dim=-1)
     else:
-        padded_logits = mask_logits_vals.unsqueeze(0).unsqueeze(0).expand(H, W, N)
-    topk_logits = torch.gather(padded_logits, dim=-1, index=topk_indices)  # (H, W, k_pad)
+        topk_dists = topk_dists_full  # (H, W, k_pad)
+        topk_indices = topk_indices_full
+        valid_mask = torch.ones_like(topk_indices, dtype=torch.bool)  # (H, W, k_pad)
 
-    # 构建 valid_mask：原始索引 < N 才有效
-    valid_mask = (topk_indices < N)  # (H, W, k_pad)
+    # # 确定输出维度
+    # k_use = N if top_k is None else min(top_k, N)
+    # k_pad = top_k if top_k is not None else N
+
+    # # 如果 N < k_pad，padding inf
+    # if N < k_pad:
+    #     pad_size = k_pad - N
+    #     padded_dists = torch.cat([all_dists, all_dists.new_full((H, W, pad_size), float('inf'))], dim=-1)
+    # else:
+    #     padded_dists = all_dists
+
+    # print(padded_dists[5,5])
+    # # 获取 top-k 最近点的 indices 和 distances
+    # topk_dists, topk_indices = torch.topk(padded_dists, k_pad, dim=-1, largest=False)  # (H, W, k_pad)
+    # print(topk_indices[5,5])
+
+    # # 获取对应的 logits 值
+    # if N < k_pad:
+    #     padded_logits = torch.cat([
+    #         mask_logits_vals.unsqueeze(0).unsqueeze(0).expand(H, W, N),
+    #         mask_logits_vals.new_zeros(H, W, pad_size)
+    #     ], dim=-1)
+    # else:
+    #     padded_logits = mask_logits_vals.unsqueeze(0).unsqueeze(0).expand(H, W, N)
+    # print(padded_logits[5,5])
+    # topk_logits = torch.gather(padded_logits, dim=-1, index=topk_indices)  # (H, W, k_pad)
+    # print(topk_logits[5,5])
+
+    # # 构建 valid_mask：原始索引 < N 才有效
+    # valid_mask = (topk_indices < N)  # (H, W, k_pad)
 
     # === 关键：构建 self_mask ===
     # 我们要找到：topk_indices 中哪些是“指向当前像素自身”的？
@@ -1459,27 +1496,38 @@ def compute_weighted_mean_variance(logits: torch.Tensor, mask: torch.Tensor, top
     is_self_and_valid = is_self & should_del & valid_mask  # 仅当是自身且有效时才屏蔽
 
     # === 计算权重（指数衰减）===
-    d_max = torch.ones((H, W,k_pad), device=logits.device, dtype=torch.float32) * (H**2 + W**2) ** 0.5 * 0.5    # 半对角线长度
-    # d_max = topk_dists.max(dim=-1, keepdim=True).values
+    # d_max = torch.ones((H, W,k_pad), device=logits.device, dtype=torch.float32) * (H**2 + W**2) ** 0.5 * 0.5    # 半对角线长度
+    d_max = topk_dists.max(dim=-1, keepdim=True).values
+    # topk_dists_ = topk_dists.clone()
+    # topk_dists_[topk_dists_ == 0] = float('inf')
+    d_min = torch.zeros((H, W,k_pad), device=logits.device, dtype=torch.float32)
     eps = 1e-8
-    # sigma = (d_max - d_min + eps)
-    weights = torch.exp(2.5 * -topk_dists / (d_max + eps))  # (H, W, k_pad)
+    sigma = (d_max - d_min + eps)
+    weights = torch.exp(2.5 * -(topk_dists - d_min) / sigma)  # (H, W, k_pad)
+    # print(weights[5,5])
 
     # 屏蔽自身：如果当前像素在 mask 中且被选入 topk，则权重置0
     weights_masked = weights * (~is_self_and_valid).float()  # 剔除自身
-    float_mask = valid_mask.float() * (~is_self_and_valid).float()
-    weights_masked = weights_masked * float_mask  # 同时保证 pad 和 self 都不参与
+    float_mask = valid_mask & ~is_self_and_valid
+    weights_masked = torch.where(float_mask, weights_masked, torch.zeros_like(weights_masked))  # 同时保证 pad 和 self 都不参与
+    # print(float_mask[5,5])
+    # print(weights_masked[5,5])
 
     total_weight = weights_masked.sum(dim=-1, keepdim=True)  # (H, W, 1)
     safe_weight = torch.where(total_weight > 0, total_weight, torch.ones_like(total_weight))
     # print(logits[11,8])
-    # print(weights_masked[11,8])
+    # print(weights_masked[2,6])
+    # print(topk_dists[2,6])
+    # print(topk_logits[2,6])
+    # print(safe_weight[5,5])
 
     # --- 情况1：不包含当前像素（已剔除）---
     weighted_sum_wo = (weights_masked * topk_logits).sum(dim=-1)
     mean_wo = weighted_sum_wo / safe_weight.squeeze(-1)
     # print(topk_logits[11,8])
     # print(mean_wo[11,8])
+    # print(weighted_sum_wo[5,5])
+    # print(mean_wo[5,5])
 
     mean_exp = mean_wo.unsqueeze(-1)
     var_numerator_wo = (weights_masked * (topk_logits - mean_exp) ** 2).sum(dim=-1)
@@ -1516,7 +1564,7 @@ def compute_weighted_mean_variance(logits: torch.Tensor, mask: torch.Tensor, top
 
     return mean_wo, var_wo, mean_w, var_w
 
-def keep_negative_by_top3_magnitude_levels(x):
+def keep_negative_by_top3_magnitude_levels(x, target_size):
     """
     在 tensor 中，对负数部分：
     - 计算每个负数的十进制数量级（floor(log10(|x|))）
@@ -1540,8 +1588,14 @@ def keep_negative_by_top3_magnitude_levels(x):
 
     # 计算绝对值
     abs_vals = negative_vals.abs()
-    robust_max = torch.quantile(abs_vals, 0.90)
+    if negative_mask.float().sum() / target_size > 2:
+        robust_max_idx = int(np.ceil(target_size * (1 - 0.8)))
+        sorted_abs_vals = torch.sort(abs_vals.view(-1), descending=True).values
+        robust_max = sorted_abs_vals[robust_max_idx]
+    else:
+        robust_max = torch.quantile(abs_vals, 0.90)
     abs_vals = torch.clamp_max(abs_vals, max=robust_max)
+    # print(robust_max)
 
     # 安全处理：避免 log10(0)，但负数绝对值不会为0
     # 计算数量级：floor(log10(abs(x)))
@@ -1786,3 +1840,88 @@ def add_uniform_points_v2(mask, seed, num1):
     if target_mask.sum() > 0:
         return add_uniform_points_cuda(credit_mask, seed, num1)
     return add_uniform_points_cuda(mask, seed, num1)
+
+def add_uniform_points_v3(logits, mask, seed, num1, mode):
+    if mode == "fg":
+        credit_mask = mask * (logits > 0.5)
+        target_mask = credit_mask * ~seed
+        if target_mask.sum() > 0:
+            return add_uniform_points_cuda(credit_mask, seed, num1)
+        credit_mask = mask * (logits > 0.1)
+        target_mask = credit_mask * ~seed
+        if target_mask.sum() > 0:
+            return add_uniform_points_cuda(credit_mask, seed, num1)
+        return add_uniform_points_cuda(mask, seed, num1)
+    else:
+        credit_mask = mask * (logits < 0.05)
+        target_mask = credit_mask * ~seed
+        if target_mask.sum() > 0:
+            return add_uniform_points_cuda(credit_mask, seed, num1)
+        credit_mask = mask * (logits < 0.1)
+        target_mask = credit_mask * ~seed
+        if target_mask.sum() > 0:
+            return add_uniform_points_cuda(credit_mask, seed, num1)
+        return add_uniform_points_cuda(mask, seed, num1)
+
+def get_min_value_outermost_mask(tensor):
+    """
+    输入: tensor, shape [H, W]
+    输出: mask, shape [H, W], 类型 torch.bool 或 torch.float
+          只有一个位置为 1，对应最小值中最靠近边界的那个点。
+    """
+    H, W = tensor.shape
+    
+    # 步骤1: 找到最小值
+    min_value = tensor.min()
+    
+    # 步骤2: 找到所有等于最小值的位置
+    min_positions = (tensor == min_value)  # bool mask
+    coords = torch.nonzero(min_positions)  # [num_min, 2], 每行是 (i, j)
+    
+    if coords.numel() == 0:
+        raise ValueError("No minimum value found")
+
+    # 步骤3: 计算每个最小值位置到图像边界的距离
+    i_coords = coords[:, 0]  # shape: [num_min]
+    j_coords = coords[:, 1]  # shape: [num_min]
+    
+    # 到四个边的距离：上、下、左、右
+    dist_to_boundary = torch.stack([
+        i_coords,           # 到上边
+        H - 1 - i_coords,   # 到下边
+        j_coords,           # 到左边
+        W - 1 - j_coords    # 到右边
+    ], dim=1)  # shape: [num_min, 4]
+
+    # 每个点的最小距离（越小越靠外）
+    min_dist = dist_to_boundary.min(dim=1).values  # shape: [num_min]
+
+    # 步骤4: 找到最小距离中的最小值（最外围），如果有多个，取第一个
+    outermost_idx = min_dist.argmin()  # 第一个最外围的索引
+    selected_coord = coords[outermost_idx]  # [2], (i, j)
+
+    # 步骤5: 构造 mask
+    mask = torch.zeros(H, W, dtype=torch.bool, device=tensor.device)
+    mask[selected_coord[0], selected_coord[1]] = True
+
+    return mask
+
+def periodic_function(t, period, amplitude, phase=0.0):
+    """
+    计算周期函数值：f(t) = a * wave((2π / p) * t + φ)
+
+    Args:
+        t (float or torch.Tensor): 当前时间
+        period (float): 周期 p
+        amplitude (float): 振幅 a
+        phase (float): 相位偏移（弧度），默认0
+
+    Returns:
+        float or torch.Tensor: 周期函数值
+    """
+    # 角频率
+    omega = 2 * math.pi / period
+    x = omega * t + phase  # 相位
+
+    return amplitude * (torch.sin(x) + 1) / 2
+
