@@ -668,10 +668,9 @@ def gradient_expand_filter_v2(img, pt_label, region_size, view=False):
         
         # target_filtered__, conf = RW.generate_pseudo_labels(final_target, {'ori_img': img[b,0, coors[0]:coors[2], coors[1]:coors[3]].unsqueeze(-1)})
         target_filtered__ = RW.initial_target(final_target, pt_label[b,0, coors[0]:coors[2], coors[1]:coors[3]], threshold=0.1)
-        if target_filtered__.sum() < 1:
-            target_filtered_by_points = pt_label[b,0, coors[0]:coors[2], coors[1]:coors[3]]
-        else:
-            target_filtered_by_points = filter_mask_by_points(target_filtered__, pt_label[b,0, coors[0]:coors[2], coors[1]:coors[3]]) # (uint8)
+        target_filtered_by_points = filter_mask_by_points(target_filtered__, pt_label[b,0, coors[0]:coors[2], coors[1]:coors[3]]) # (uint8)
+        if target_filtered_by_points.sum() < 4:
+            target_filtered_by_points = dilate_mask(pt_label[b,0, coors[0]:coors[2], coors[1]:coors[3]], 1)
         target_refined = target_filtered_by_points
         output[b,0, coors[0]:coors[2], coors[1]:coors[3]] = torch.max(output[b,0, coors[0]:coors[2], coors[1]:coors[3]], target_refined)
         # # 显示结果
@@ -756,12 +755,12 @@ def label_evolution(image, pt_label, pesudo_label, pred, view=False):
         s1, e1, s2, e2 = proper_region(pred_[b, 0] + pesudo_label[b, 0], c1, c2)
         region = image[b:b+1, :, s1:e1, s2:e2] 
 
-        advice_region = examine_iou(pred_[b, 0, s1:e1, s2:e2] , pesudo_label[b, 0, s1:e1, s2:e2], iou_treshold=0.001)
+        advice_region = examine_iou(pred_[b, 0, s1:e1, s2:e2] , pesudo_label[b, 0, s1:e1, s2:e2], region[0,0], iou_treshold=0.1)
         advice_dilated = dilate_mask(advice_region, 1)
         advice_dilated = smooth_and_scale_mask(advice_dilated, 0., 1., 2, kernel_size=5)
         #
         # target_, grad_expand_process_data = gradient_expand_one_size(region, [0.75, 0.5, 0.25], view=view)
-        target_, grad_expand_process_data = gradient_expand_one_size(region, [0.75, 0.5, 0.25], advice_dilated, alpha=0.0, beta=1.0, view=view)
+        target_, grad_expand_process_data = gradient_expand_one_size(region, [0.5, 0.5, 0.25], advice_dilated, alpha=0.5, beta=0.7, view=view)
 
         # target, treshold_filter_process_data = target_adanptive_filtering_v2(target_fused, region, advice_region, view=view)
         # # final_target_ = target_adanptive_filtering(target, region, pred[b, 0, s1:e1, s2:e2])
@@ -773,10 +772,10 @@ def label_evolution(image, pt_label, pesudo_label, pred, view=False):
         # plt.subplot(1, 3, 1)
         # plt.imshow(target_, cmap='gray', vmax=1.0, vmin=0.0)
         # plt.subplot(1, 3, 2)
-        # plt.imshow(advice_dilated, cmap='gray', vmax=0.1, vmin=0.0)
+        # plt.imshow(pesudo_label[b, 0, s1:e1, s2:e2], cmap='gray', vmax=0.1, vmin=0.0)
         # plt.subplot(1, 3, 3)
-        # plt.imshow(region[0,0], cmap='gray', vmax=1.0, vmin=0.0)
-        # plt.show(block=False)
+        # plt.imshow(pred_[b, 0, s1:e1, s2:e2], cmap='gray', vmax=1.0, vmin=0.0)
+        # plt.show()
 
         final_target_ = RW.evolve_target(target_, advice_region, region[0,0], pt_label[b,0, s1:e1, s2:e2])
         # final_target_ = target_
@@ -784,14 +783,14 @@ def label_evolution(image, pt_label, pesudo_label, pred, view=False):
         target_filtered_by_points = filter_mask_by_points(final_target_, advice_region, 1)
 
         # 审查，新的伪标签和上一轮伪标签的差距在一定范围内，若差距过大，则还是使用上一轮的伪标签
-        final_target = examine_iou(target_filtered_by_points, pesudo_label[b, 0, s1:e1, s2:e2], iou_treshold=0.001)
+        final_target = examine_iou(target_filtered_by_points, pesudo_label[b, 0, s1:e1, s2:e2], region[0,0], iou_treshold=0.2)
         # 保存结果
         output[b,0, s1:e1, s2:e2] = torch.max(output[b,0, s1:e1, s2:e2], final_target)
         # 显示结果
         plt.figure(figsize=(30, 6))
         plt.subplot(151), plt.imshow(region[0,0], cmap='gray', vmax=1., vmin=0.)
         plt.subplot(152), plt.imshow(target_, cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(153), plt.imshow(target_filtered_by_points, cmap='gray', vmax=1., vmin=0.)
+        plt.subplot(153), plt.imshow(final_target, cmap='gray', vmax=1., vmin=0.)
         plt.subplot(154), plt.imshow(pesudo_label[b, 0, s1:e1, s2:e2], cmap='gray', vmax=1., vmin=0.)
         plt.subplot(155), plt.imshow(pred_[b, 0, s1:e1, s2:e2], cmap='gray', vmax=1., vmin=0.)
         plt.show()

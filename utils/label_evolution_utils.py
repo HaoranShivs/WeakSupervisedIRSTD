@@ -15,58 +15,74 @@ def proper_region(pred, c1, c2):
         s2 (int): 区域的起始宽度索引。
         e2 (int): 区域的结束宽度索引。
     """
-    initial_size = 48
+    initial_size = 64
     half_size = initial_size // 2
     pred_ = F.pad(pred, [half_size, half_size, half_size, half_size], value=0)
     s1 = c1
     e1 = c1 + initial_size
     s2 = c2
     e2 = c2 + initial_size
-    mini_size = 2
-    extend_size = 3
+    mini_size = 6
+    extend_factor = 0.5
     # 合适上边界
-    for i in range(half_size, mini_size//2, -1):
+    for i in range(mini_size//2, half_size):
         s1 = c1 + half_size - i
-        if torch.sum(pred_[s1, s2:e2]) > 1.:
+        if torch.sum(pred_[s1, s2:e2]) < 1.:
             break
     # 下边界
-    for i in range(half_size, mini_size//2, -1):
+    for i in range(mini_size//2, half_size):
         e1 = c1 + half_size + i
-        if torch.sum(pred_[e1, s2:e2]) > 1.0:
+        if torch.sum(pred_[e1, s2:e2])  < 1:
             break
     # 左边界
-    for i in range(half_size, mini_size//2, -1):
+    for i in range(mini_size//2, half_size):
         s2 = c2 + half_size - i
-        if torch.sum(pred_[s1:e1, s2]) > 1.0:
+        if torch.sum(pred_[s1:e1, s2])  < 1:
             break
     # 右边界
-    for i in range(half_size, mini_size//2, -1):
+    for i in range(mini_size//2, half_size):
         e2 = c2 + half_size + i
-        if torch.sum(pred_[s1:e1, e2]) > 1.0:
+        if torch.sum(pred_[s1:e1, e2])  < 1:
             break
     
-    s1 = s1 - half_size - extend_size if s1 - half_size - extend_size > 1 else 1
-    e1 = e1 - half_size + extend_size if e1 - half_size + extend_size < pred.shape[0] - 2 else pred.shape[0] - 2
-    s2 = s2 - half_size - extend_size if s2 - half_size - extend_size > 1 else 1
-    e2 = e2 - half_size + extend_size if e2 - half_size + extend_size < pred.shape[1] - 2 else pred.shape[1] - 2
-    return (s1, e1, s2, e2)
+    s1_, e1_ = s1 - half_size - int((e1 - s1) * extend_factor / 2), e1 - half_size + int((e1 - s1) * extend_factor / 2)
+    s2_, e2_ = s2 - half_size - int((e2 - s2) * extend_factor / 2), e2 - half_size + int((e2 - s2) * extend_factor / 2)
+    s1_ = s1_ if s1_ > 1 else 1
+    e1_ = e1_ if e1_ < pred.shape[0] - 2 else pred.shape[0] - 2
+    s2_ = s2_ if s2_ > 1 else 1
+    e2_ = e2_ if e2_ < pred.shape[1] - 2 else pred.shape[1] - 2
+    
+    return (s1_, e1_, s2_, e2_)
 
 
-def examine_iou(final_target, pesudo_label, iou_treshold=0.5):
+def examine_iou(final_target, pesudo_label, image, iou_treshold=0.5):
     """
     最终伪标签与上轮伪标签的iou，并返回结果。
     final_target (torch.Tensor): (H,W)模型输出的伪标签。
     pesudo_label (torch.Tensor): (H,W)上轮的伪标签。
+    image(torch.Tensor): (H,W)上轮的伪标签。
     iou_treshold (float): iou阈值，默认为0.5。
     """
-    if torch.max(pesudo_label) < 0.1:
-        return final_target
-    iou = iou_score(final_target.numpy() > 0.1, pesudo_label.numpy() > 0.1)
-    # print(iou)
-    if iou < iou_treshold:
+    if torch.sum(final_target) < 4 and torch.sum(pesudo_label) >= 4:
         return pesudo_label
-    else:
+    elif torch.sum(final_target) >= 4 and torch.sum(pesudo_label) < 4:
         return final_target
+    elif torch.sum(final_target) >=4 and torch.sum(pesudo_label) >= 4:
+        image_lightest = image == torch.max(image)
+        if torch.sum(image_lightest.float() * final_target) < 1 and torch.sum(image_lightest.float() * pesudo_label) >= 1:
+            return pesudo_label
+        elif torch.sum(image_lightest.float() * pesudo_label) < 1 and torch.sum(image_lightest.float() * final_target) >= 1:
+            return final_target
+        if torch.max(pesudo_label) < 0.1:
+            return final_target
+        iou = iou_score(final_target.numpy() > 0.1, pesudo_label.numpy() > 0.1)
+        # print(iou)
+        if iou < iou_treshold:
+            return pesudo_label
+        else:
+            return final_target
+    else :
+        return torch.zeros_like(pesudo_label)
     
 
 def smooth_and_scale_mask(mask, a=0.1, b=0.9, sigma=None, kernel_size=None):

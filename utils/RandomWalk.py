@@ -621,12 +621,14 @@ class RandomWalkPixelLabeling(nn.Module):
         fg_area = (grad_intensity > threshold).float()
         bg_area = 1 - fg_area
 
+        noise_ratio = 0.05
+        converge_time = 0
         for iter1 in range(50):
             fg_mask = (summit_mask * (fg_area > 0.1)).float()
             bg_mask = (summit_mask * (bg_area > 0.1)).float()
             for iter2 in range(100):
                 noise = torch.rand(grad_intensity.shape)
-                GI = grad_intensity * 0.95 + noise * 0.05
+                GI = grad_intensity * (1-noise_ratio) + noise * noise_ratio
                 # fig = plt.figure(figsize=(35, 5))
                 # plt.subplot(1, 7, 1)
                 # plt.imshow(image.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
@@ -721,15 +723,15 @@ class RandomWalkPixelLabeling(nn.Module):
             bg_area_new = ~result
             diff = torch.norm(bg_area_new.float() - bg_area.float())
             if diff < (H * W / 64) ** 0.5:
-                # if fitted == 0:
-                #     fitted = 1
-                #     fg_area, bg_area = fg_area_new.float(), bg_area_new.float()
-                #     continue
-                # else:
-                #     # print(f"iter1 Converged at{iter1}, Diff: {diff}")
+                converge_time += 1
+                # print(f"iter1 Converged at{iter1}, Diff: {diff}")
+            if converge_time > 3:
                 break
             # else:
             #     print(f"iter1 {iter1}, Diff: {diff}")
+            if result.float().sum() < 4:
+                noise_ratio = noise_ratio * 0.5
+                continue
             if fg_area_new.sum() > (grad_intensity > 0.1).float().sum() * 2 and (H + W) > 96:
                 break
             decay_rate = 0.5
@@ -747,6 +749,9 @@ class RandomWalkPixelLabeling(nn.Module):
         Returns:
             result_mask: [H, W]
         """
+        if target_mask.float().sum() < 4:
+            return self.initial_target(grad_intensity, pt_label, 0.1)
+            print("initiated one")
         H, W = grad_intensity.shape
         GI = grad_intensity
         image = (image - image.min())/(image.max() - image.min())
@@ -763,9 +768,9 @@ class RandomWalkPixelLabeling(nn.Module):
         fg_area = target_mask.float()
         # bg_area = (1-dilate_mask(target_mask.float(), 1)).float()
         bg_area = (1-target_mask.float()).float()
+        noise_ratio = 0.05
+        converge_time = 0
         for iter1 in range(50):
-            noise = torch.rand(GI.shape)
-            GI = grad_intensity * 0.90 + noise * 0.10
             fg_mask = fg_area * summit_mask
             # bg_mask = bg_area * summit_mask
             # # 生成空间均匀的seed
@@ -782,6 +787,8 @@ class RandomWalkPixelLabeling(nn.Module):
             bg_mask = add_uniform_points_v3(GI, bg_area.bool(), bg_mask.bool(), int(bg_seed_num), mode='bg')
             # result_num_ratio = fg_area.sum() / (fg_area.sum() + bg_area.sum())
             for iter2 in range(100):
+                noise = torch.rand(GI.shape)
+                GI = grad_intensity * (1-noise_ratio) + noise * noise_ratio
                 # fig = plt.figure(figsize=(35, 5))
                 # plt.subplot(1, 7, 1)
                 # plt.imshow(GI.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
@@ -847,7 +854,7 @@ class RandomWalkPixelLabeling(nn.Module):
                 bg_mask_new = bg_mask_new.bool() * ~result
 
                 diff = torch.norm(bg_mask_new.float() - (bg_mask>0.1).float())
-                if diff < 1:
+                if diff < 1 :
                     # print(f"iter1 {iter1} iter2 Converged at {iter2}, Diff: {diff}")
                     break
                 # else:
@@ -881,11 +888,19 @@ class RandomWalkPixelLabeling(nn.Module):
             diff = torch.norm(bg_area_new.float() - bg_area.float())
             if diff < (H * W / 64) ** 0.5:
                 # print(f"iter1 Converged at{iter1}, Diff: {diff}")
-                break
+                converge_time += 1
             # else:
             #     print(f"iter1 {iter1}, Diff: {diff}")
             # fg_area, bg_area = fg_area_new.float(), bg_area_new.float()
+            if converge_time > 3:
+                break
+            if fg_area_new.sum() > (grad_intensity > 0.1).float().sum() * 2 and (H + W) > 96:
+                break
             decay_rate = 0.5
+            if result.float().sum() < 4:
+                noise_ratio = noise_ratio * 0.5
+                continue
+            noise_ratio = noise_ratio * 0.9
             fg_area, bg_area = fg_area_new.float() + fg_area*decay_rate, bg_area_new.float()+ bg_area*decay_rate
             # fg_area, bg_area = (fg_area_new.float()/decay_rate + fg_area)*decay_rate, (bg_area_new.float()/decay_rate + bg_area)*decay_rate
             fg_area, bg_area = torch.clamp(fg_area, min=0.0, max=1.0), torch.clamp(bg_area, min=0.0, max=1.0)
