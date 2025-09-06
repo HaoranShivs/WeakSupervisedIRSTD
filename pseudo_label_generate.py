@@ -71,29 +71,40 @@ def parse_args():
     return args
 
 
-def gradient_expand_one_size(region, scale_weight=[0.5, 0.5, 0.5], target_mask=None, alpha=0.5, beta=0.8, view=False):
+def gradient_expand_one_size(region, scale_weight=[0.5, 0.5, 0.5], dilated_mask=None, eroded_mask=None, alpha=0.5, beta=0.8, view=False):
     # 归一化区域像素，以形成更强烈的边缘
     region_ = (region - region.min())/(region.max() - region.min())
     # 梯度形成
     img_gradient_1 = img_gradient2(region_)  # 2*2 sober
     img_gradient_2 = img_gradient3(region_)  # 3*3 sober
     img_gradient_3 = img_gradient5(region_)  # 5*5 sobel
+
+    # # 梯度映射，突出中灰度的区分度
+    min_value1, max_value1 = robust_min_max(img_gradient_1, 0.001, 0.01)
+    min_value2, max_value2 = robust_min_max(img_gradient_2, 0.001, 0.01)
+    min_value3, max_value3 = robust_min_max(img_gradient_3, 0.001, 0.01)
+    img_gradient_1, img_gradient_2, img_gradient_3 = (img_gradient_1 - min_value1) / (max_value1 - min_value1), \
+        (img_gradient_2 - min_value2) / (max_value2 - min_value2), (img_gradient_3 - min_value3) / (max_value3 - min_value3)
     
-    # 梯度映射，突出中灰度的区分度
-    img_gradient_1, img_gradient_2, img_gradient_3 = sigmoid_mapping3(img_gradient_1, 10), \
-         sigmoid_mapping3(img_gradient_2, 10), sigmoid_mapping3(img_gradient_3, 10)
+    img_gradient_1, img_gradient_2, img_gradient_3 = sigmoid_mapping2(img_gradient_1, 10, scale_weight[0]), \
+        sigmoid_mapping2(img_gradient_2, 10, scale_weight[1]), sigmoid_mapping2(img_gradient_3, 10, scale_weight[2])
+    
     # 多尺度融合
     img_gradient_ = grad_multi_scale_fusion(img_gradient_1, scale_weight[0]) * grad_multi_scale_fusion(img_gradient_2, scale_weight[0]) * \
         grad_multi_scale_fusion(img_gradient_3, scale_weight[0])
-    # 使用target_mask来增强对应区域的梯度
-    if target_mask is not None:
-        img_gradient_ = alpha + (img_gradient_ - img_gradient_.min())/(img_gradient_.max() - img_gradient_.min() + 1e-11) * (1 - alpha)   # 变换
-        target_mask = beta + (target_mask - target_mask.min())/(target_mask.max() - target_mask.min() + 1e-11) * (1 - beta)
-        img_gradient_ = img_gradient_ * target_mask.unsqueeze(0).unsqueeze(0)   # (1,24,H,W) *(1,1,H,W)
     img_gradient_ = (img_gradient_ - img_gradient_.min())/(img_gradient_.max() - img_gradient_.min() + 1e-11)
-
-    # 用单像素宽度的梯度替代模糊边缘的宽的梯度
+    
+  # 用单像素宽度的梯度替代模糊边缘的宽的梯度
     grad_mask = local_max_gradient(img_gradient_)
+
+    # 使用target_mask来增强对应区域的梯度
+    if erode_mask is not None:
+        img_gradient_ = img_gradient_ * (1 - eroded_mask)
+    if dilated_mask is not None:
+        dilated_mask = beta + (dilated_mask - dilated_mask.min())/(dilated_mask.max() - dilated_mask.min() + 1e-11) * (1 - beta)
+        img_gradient_4 = img_gradient_ * dilated_mask.unsqueeze(0).unsqueeze(0)   # (1,24,H,W) *(1,1,H,W)
+    img_gradient_4 = (img_gradient_4 - img_gradient_4.min())/(img_gradient_4.max() - img_gradient_4.min() + 1e-11)
+
     img_gradient_4 = grad_mask * img_gradient_
 
     # 扩展梯度
@@ -633,6 +644,7 @@ def gradient_expand_filter_V1(img, pt_label, region_size, view=False):
             process_data_view(img[b], _region[0,0], final_target, grad_expand_process_data, target_filtered_, scores, target_filtered, treshold_filter_process_data, target_refined, output[b,0])
     return output
 
+
 def gradient_expand_filter_v2(img, pt_label, region_size, view=False):
     B, _, H, W = img.shape
     indices = torch.where(pt_label > 1e-4)
@@ -640,7 +652,6 @@ def gradient_expand_filter_v2(img, pt_label, region_size, view=False):
     RW = RandomWalkPixelLabeling(spatial_weight=0, intensity_weight=1, feature_weights={'ori_img': 0.2}, 
                                  max_iterations1=100, max_iterations2=50, device='cpu')
     for b, _, s1, s2 in zip(*indices):
-        # print("b: ", b)
         # 提取区域
         targets = []
         for i in range(len(region_size)):
@@ -664,10 +675,10 @@ def gradient_expand_filter_v2(img, pt_label, region_size, view=False):
         # plt.imshow(final_target, cmap='gray', vmax=0.1, vmin=0.0)
         # plt.subplot(1, 3, 3)
         # plt.imshow(img[b,0, coors[0]:coors[2], coors[1]:coors[3]], cmap='gray', vmax=1.0, vmin=0.0)
-        # plt.show(block=False)
+        # plt.show()
         
         # target_filtered__, conf = RW.generate_pseudo_labels(final_target, {'ori_img': img[b,0, coors[0]:coors[2], coors[1]:coors[3]].unsqueeze(-1)})
-        target_filtered__ = RW.initial_target(final_target, pt_label[b,0, coors[0]:coors[2], coors[1]:coors[3]], threshold=0.1)
+        target_filtered__ = RW.initial_target(final_target, pt_label[b,0, coors[0]:coors[2], coors[1]:coors[3]], threshold=0.5)
         target_filtered_by_points = filter_mask_by_points(target_filtered__, pt_label[b,0, coors[0]:coors[2], coors[1]:coors[3]]) # (uint8)
         if target_filtered_by_points.sum() < 4:
             target_filtered_by_points = dilate_mask(pt_label[b,0, coors[0]:coors[2], coors[1]:coors[3]], 1)
@@ -702,6 +713,7 @@ def gradient_expand_filter_v2(img, pt_label, region_size, view=False):
             # process_data_view(img[b], _region[0,0], final_target, grad_expand_process_data, target_filtered_, scores, target_filtered, treshold_filter_process_data, target_refined, output[b,0])
     return output
 
+
 def gradient_expand_filter(img, pt_label, region_size, view=False):
     B, _, H, W = img.shape
     indices = torch.where(pt_label > 1e-4)
@@ -719,7 +731,7 @@ def gradient_expand_filter(img, pt_label, region_size, view=False):
             x2 = min(W-1, s2 + (_region_size - _region_size // 2))
             _region = img[b:b+1,:1, y1:y2, x1:x2]
 
-            _target, grad_expand_process_data = gradient_expand_one_size(_region, [0.5, 0.5, 0.25], view=view)
+            _target, grad_expand_process_data = gradient_expand_one_size(_region, [0.5, 0.5, 0.3], view=view)
             targets.append({'target':_target, 'coor':(y1,x1,y2,x2)})
         
         final_target, scores, coors = finalize_target(targets, view)
@@ -750,49 +762,48 @@ def label_evolution(image, pt_label, pesudo_label, pred, view=False):
     output = torch.zeros_like(image, dtype=torch.float32)
     RW = RandomWalkPixelLabeling(spatial_weight=0, intensity_weight=1, feature_weights={'ori_img': 0.001}, 
                                  max_iterations1=100, max_iterations2=50, device='cpu')
-    d = 1
     for b, _, c1, c2 in zip(*indices):
-        s1, e1, s2, e2 = proper_region(pred_[b, 0] + pesudo_label[b, 0], c1, c2)
-        region = image[b:b+1, :, s1:e1, s2:e2] 
+        coors, coors2 = proper_region(pred_[b, 0] + pesudo_label[b, 0], c1, c2)
+        region = image[b:b+1, :, coors[0]:coors[1], coors[2]:coors[3]]
 
-        advice_region = examine_iou(pred_[b, 0, s1:e1, s2:e2] , pesudo_label[b, 0, s1:e1, s2:e2], region[0,0], iou_treshold=0.1)
-        advice_dilated = dilate_mask(advice_region, 1)
-        advice_dilated = smooth_and_scale_mask(advice_dilated, 0., 1., 2, kernel_size=5)
+        # advice_region, antiadvice = advice_region_antiadvice(pred_[b, 0, coors[0]:coors[1], coors[2]:coors[3]] , pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], region[0,0], iou_treshold=0.01)
+        advice_region, antiadvice = advice_region_antiadvice(coors, coors2, target_mask=pred_[b, 0], pesudo_label=pesudo_label[b,0], image=image[b, 0],  iou_treshold=0.1)
+        
+        d1,d2 = 1, 3
+        advice_dilated_ = dilate_mask(advice_region, d1)
+        advice_dilated = smooth_and_scale_mask(advice_dilated_, 0., 1., 1, kernel_size=3)
+        advice_eroded = erode_mask(advice_region, d2)
         #
         # target_, grad_expand_process_data = gradient_expand_one_size(region, [0.75, 0.5, 0.25], view=view)
-        target_, grad_expand_process_data = gradient_expand_one_size(region, [0.5, 0.5, 0.25], advice_dilated, alpha=0.5, beta=0.7, view=view)
-
-        # target, treshold_filter_process_data = target_adanptive_filtering_v2(target_fused, region, advice_region, view=view)
-        # # final_target_ = target_adanptive_filtering(target, region, pred[b, 0, s1:e1, s2:e2])
-        # target_mapped = mapping_4_crf_v4(target, target_fused, 0.01, [0.6, 0.5, 0.4, 0.1])
-        # final_target_ = dense_crf(target_mapped, region[0,0].numpy(), 1)
-        # final_target_ = torch.tensor(final_target_)
+        target_, grad_expand_process_data = gradient_expand_one_size(region, [0.75, 0.5, 0.25], advice_dilated, advice_eroded, alpha=0.5, beta=0.6, view=view)
 
         # fig = plt.figure(figsize=(15, 5))
         # plt.subplot(1, 3, 1)
         # plt.imshow(target_, cmap='gray', vmax=1.0, vmin=0.0)
         # plt.subplot(1, 3, 2)
-        # plt.imshow(pesudo_label[b, 0, s1:e1, s2:e2], cmap='gray', vmax=0.1, vmin=0.0)
+        # plt.imshow(pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=0.1, vmin=0.0)
         # plt.subplot(1, 3, 3)
-        # plt.imshow(pred_[b, 0, s1:e1, s2:e2], cmap='gray', vmax=1.0, vmin=0.0)
+        # plt.imshow(pred_[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1.0, vmin=0.0)
         # plt.show()
 
-        final_target_ = RW.evolve_target(target_, advice_region, region[0,0], pt_label[b,0, s1:e1, s2:e2])
+        final_target_ = RW.evolve_target(target_, advice_region, antiadvice, region[0,0], pt_label[b,0, coors[0]:coors[1], coors[2]:coors[3]])
         # final_target_ = target_
-
-        target_filtered_by_points = filter_mask_by_points(final_target_, advice_region, 1)
+        if advice_region.sum() > 4:
+            target_filtered_by_points = filter_mask_by_points(final_target_, advice_region, 1)
+        else:
+            target_filtered_by_points = filter_mask_by_points(final_target_, pt_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], 5)
 
         # 审查，新的伪标签和上一轮伪标签的差距在一定范围内，若差距过大，则还是使用上一轮的伪标签
-        final_target = examine_iou(target_filtered_by_points, pesudo_label[b, 0, s1:e1, s2:e2], region[0,0], iou_treshold=0.2)
+        final_target = examine_iou(target_filtered_by_points, pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], region[0,0], iou_treshold=0.5)
         # 保存结果
-        output[b,0, s1:e1, s2:e2] = torch.max(output[b,0, s1:e1, s2:e2], final_target)
+        output[b,0, coors[0]:coors[1], coors[2]:coors[3]] = torch.max(output[b,0, coors[0]:coors[1], coors[2]:coors[3]], final_target)
         # 显示结果
         plt.figure(figsize=(30, 6))
         plt.subplot(151), plt.imshow(region[0,0], cmap='gray', vmax=1., vmin=0.)
         plt.subplot(152), plt.imshow(target_, cmap='gray', vmax=1., vmin=0.)
         plt.subplot(153), plt.imshow(final_target, cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(154), plt.imshow(pesudo_label[b, 0, s1:e1, s2:e2], cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(155), plt.imshow(pred_[b, 0, s1:e1, s2:e2], cmap='gray', vmax=1., vmin=0.)
+        plt.subplot(154), plt.imshow(pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
+        plt.subplot(155), plt.imshow(pred_[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
         plt.show()
         # if view:
         #     process_data_view(image[b], region[0,0], pred[b, 0], grad_expand_process_data, target, [100,], target_mapped, treshold_filter_process_data, final_target, output[b,0])
@@ -853,7 +864,7 @@ def process_data_view(img, region, target, gred_expand_process_data, final_targe
     grad1, grad2, grad3, final_grad, mask, boundary, expanded_grad = gred_expand_process_data
 
     ax = axes[1, 0]
-    ax.imshow(torch.sum(final_grad, dim=[0,1]), cmap='gray')
+    ax.imshow(final_grad[0,0], cmap='gray')
     ax.set_title("final_gradient")
 
     ax = axes[1, 1]
@@ -861,15 +872,18 @@ def process_data_view(img, region, target, gred_expand_process_data, final_targe
     ax.set_title("expanded_gradient")
 
     ax = axes[1, 2]
-    ax.imshow(torch.sum(grad1, dim=[0,1]), cmap='gray')
+    # ax.imshow(torch.sum(grad1, dim=[0,1]), cmap='gray')
+    ax.imshow(grad1[0,0], cmap='gray', vmax=1.0, vmin=0.0)
     ax.set_title("grad1")
     
     ax = axes[1, 3]
-    ax.imshow(torch.sum(grad2, dim=[0,1]), cmap='gray')
+    # ax.imshow(torch.sum(grad2, dim=[0,1]), cmap='gray')
+    ax.imshow(grad2[0,0], cmap='gray', vmax=1.0, vmin=0.0)
     ax.set_title("grad2")
 
     ax = axes[2, 3]
-    ax.imshow(torch.sum(grad3, dim=[0,1]), cmap='gray')
+    # ax.imshow(torch.sum(grad3, dim=[0,1]), cmap='gray')
+    ax.imshow(grad3[0,0], cmap='gray', vmax=1.0, vmin=0.0)
     ax.set_title("grad3")
 
     ax = axes[2, 2]

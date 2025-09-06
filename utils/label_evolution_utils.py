@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
-from utils.utils import iou_score, gaussian_blurring_2D
+from utils.utils import iou_score, gaussian_blurring_2D, gaussian_kernel
 
 def proper_region(pred, c1, c2):
     """
@@ -44,16 +44,19 @@ def proper_region(pred, c1, c2):
         e2 = c2 + half_size + i
         if torch.sum(pred_[s1:e1, e2])  < 1:
             break
+
+    s1, e1, s2, e2 = s1 - half_size, e1 - half_size, s2 - half_size, e2 - half_size
+    s1, e1 = max(s1, 1), min(e1, pred.shape[0] - 2)
+    s2, e2 = max(s2, 1), min(e2, pred.shape[1] - 2)
     
-    s1_, e1_ = s1 - half_size - int((e1 - s1) * extend_factor / 2), e1 - half_size + int((e1 - s1) * extend_factor / 2)
-    s2_, e2_ = s2 - half_size - int((e2 - s2) * extend_factor / 2), e2 - half_size + int((e2 - s2) * extend_factor / 2)
+    s1_, e1_ = s1 - int((e1 - s1) * extend_factor / 2), e1 + int((e1 - s1) * extend_factor / 2)
+    s2_, e2_ = s2 - int((e2 - s2) * extend_factor / 2), e2 + int((e2 - s2) * extend_factor / 2)
     s1_ = s1_ if s1_ > 1 else 1
     e1_ = e1_ if e1_ < pred.shape[0] - 2 else pred.shape[0] - 2
     s2_ = s2_ if s2_ > 1 else 1
     e2_ = e2_ if e2_ < pred.shape[1] - 2 else pred.shape[1] - 2
     
-    return (s1_, e1_, s2_, e2_)
-
+    return (int(s1_), int(e1_), int(s2_), int(e2_)), (int(s1), int(e1), int(s2), int(e2))
 
 def examine_iou(final_target, pesudo_label, image, iou_treshold=0.5):
     """
@@ -63,18 +66,11 @@ def examine_iou(final_target, pesudo_label, image, iou_treshold=0.5):
     image(torch.Tensor): (H,W)上轮的伪标签。
     iou_treshold (float): iou阈值，默认为0.5。
     """
-    if torch.sum(final_target) < 4 and torch.sum(pesudo_label) >= 4:
-        return pesudo_label
-    elif torch.sum(final_target) >= 4 and torch.sum(pesudo_label) < 4:
+    if pesudo_label.float().sum() < 4 and final_target.float().sum() >= 4:
         return final_target
-    elif torch.sum(final_target) >=4 and torch.sum(pesudo_label) >= 4:
-        image_lightest = image == torch.max(image)
-        if torch.sum(image_lightest.float() * final_target) < 1 and torch.sum(image_lightest.float() * pesudo_label) >= 1:
-            return pesudo_label
-        elif torch.sum(image_lightest.float() * pesudo_label) < 1 and torch.sum(image_lightest.float() * final_target) >= 1:
-            return final_target
-        if torch.max(pesudo_label) < 0.1:
-            return final_target
+    if pesudo_label.float().sum() >= 4 and final_target.float().sum() < 4:
+        return pesudo_label
+    if (final_target * pesudo_label).float().sum() >= 4:
         iou = iou_score(final_target.numpy() > 0.1, pesudo_label.numpy() > 0.1)
         # print(iou)
         if iou < iou_treshold:
@@ -84,6 +80,53 @@ def examine_iou(final_target, pesudo_label, image, iou_treshold=0.5):
     else :
         return torch.zeros_like(pesudo_label)
     
+def advice_region_antiadvice(coors, coors2, target_mask, pesudo_label, image, iou_treshold=0.5):
+    target_mask_ = target_mask[coors[0]:coors[1], coors[2]:coors[3]]
+    pesudo_label_ = pesudo_label[coors[0]:coors[1], coors[2]:coors[3]]
+    image_ = image[coors[0]:coors[1], coors[2]:coors[3]]
+    advice = examine_iou(target_mask_, pesudo_label_, image_, iou_treshold)
+    if advice.float().sum() < 4:
+        antiadvice = torch.ones_like(advice)
+        antiadvice[coors2[0]-coors[0]:coors2[1]-coors[0], coors2[2]-coors[2]:coors2[3]-coors[2]] = 0
+    else:
+        antiadvice = torch.zeros_like(advice)
+    return advice, antiadvice
+
+
+def expand_and_contract_mask(mask, d1, d2):
+    """
+    对目标mask的边缘进行向外和向内扩展。
+    
+    参数:
+        mask (torch.Tensor): 输入的目标mask，形状为 [1, 1, H, W]。
+        d1 (int): 向外扩展的像素数。
+        d2 (int): 向内收缩的像素数。
+    
+    返回:
+        torch.Tensor: 处理后的mask，形状与输入相同，取值为0或1。
+    """
+    
+    # 使用最大池化实现向外扩展
+    kernel_size_d1 = 2 * d1 + 1
+    expanded_mask = F.max_pool2d(mask.float(), kernel_size=kernel_size_d1, stride=1, padding=d1)
+    
+    # 使用腐蚀操作（最小池化）实现向内收缩
+    kernel_size_d2 = 2 * d2 + 1
+    contracted_mask = -F.max_pool2d(-mask.float(), kernel_size=kernel_size_d2, stride=1, padding=d2)
+
+    # 对结果取高斯模糊，即不产生锐利的mask，而是宽容度更高的
+    kernel_size = min(d1-1, d2-1)*2 + 1
+    gaussian_kernel_1d = gaussian_kernel(kernel_size, 2)
+    gaussian_kernel_ = torch.outer(gaussian_kernel_1d, gaussian_kernel_1d)
+    gaussian_kernel_ = gaussian_kernel_.expand(1, 1, kernel_size, kernel_size)
+    result_mask = F.conv2d(expanded_mask, gaussian_kernel_, padding=gaussian_kernel_.shape[-1]//2)
+
+    # 取两者的交集：向外扩展的部分与向内收缩的部分
+    result_mask = result_mask * (contracted_mask < 1.0)
+    # result_mask = (result_mask > 0.5).float()
+
+    return result_mask
+
 
 def smooth_and_scale_mask(mask, a=0.1, b=0.9, sigma=None, kernel_size=None):
     """

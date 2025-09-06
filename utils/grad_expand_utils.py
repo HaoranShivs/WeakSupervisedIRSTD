@@ -387,3 +387,37 @@ def sigmoid_mapping3(tensor, alpha1, alpha3=0.25):
 def grad_multi_scale_fusion(tensor, weights):
     return tensor * weights + 1 - weights
 
+def robust_min_max(tensor, threshold=0.1, percentile=0.1):
+    """
+    Args:
+        tensor (torch.Tensor): 输入的任意形状的 tensor
+        threshold (float): 判断是否有效的阈值，只有大于该值的元素才被保留
+        percentile (float): 百分比，用于选取 top 和 bottom 的比例，默认为 10%
+
+    Returns:
+        robust_min (float): 鲁棒最小值
+        robust_max (float): 鲁棒最大值
+    """
+    # 1. 展平 tensor 并筛选出大于 threshold 的元素
+    flat_tensor = tensor.view(-1)
+    valid_elements = flat_tensor[flat_tensor > threshold]
+
+    if len(valid_elements) == 0:
+        return 0, 1e-8
+
+    # 2. 排序
+    sorted_elements = torch.sort(valid_elements).values
+
+    # 3. 计算 10% 的数量，并向上取整
+    num_elements = len(sorted_elements)
+    k = max(1, int(num_elements * percentile + 0.5))  # 四舍五入并至少取1个
+
+    # 4. 取前10%和后10%，并计算均值
+    bottom_k = sorted_elements[:k]
+    top_k = sorted_elements[-k:]
+
+    robust_min = bottom_k.mean().item()
+    robust_max = top_k.mean().item()
+
+    return robust_min, robust_max
+

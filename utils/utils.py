@@ -869,149 +869,6 @@ def random_select_from_prob_mask(prob_mask, num, replacement=False):
 
     return out_mask
 
-# def select_uniform_logits_pixels(logits, mask_a, mask_b, threshold, num):
-#     """
-#     从 mask_a 中但不在 mask_b 中的区域，选出 num 个 logits 值分布均匀的像素，
-#     并与 mask_b 合并返回一个新的 mask。
-
-#     参数:
-#         logits: Tensor of shape [H, W] or [1, H, W]
-#         mask_a: Binary Tensor of shape [H, W], dtype=torch.bool or int
-#         mask_b: Binary Tensor of shape [H, W], subset of mask_a
-#         num: int, 要选出的像素数量
-
-#     返回:
-#         mask_c: Binary Tensor of shape [H, W], 包含 mask_b 和选出的 num 个像素
-#     """
-#     # 确保是 bool 类型便于操作
-#     if mask_a.dtype == torch.int:
-#         mask_a = mask_a.bool()
-#     if mask_b.dtype == torch.int:
-#         mask_b = mask_b.bool()
-
-#     # 展平 logits 到 [H, W]
-#     if logits.dim() == 3:
-#         logits = logits.squeeze(0)  # 假设 batch size 为 1
-
-#     H, W = logits.shape
-
-#     # 1. 找出 mask_a 中但不在 mask_b 中的像素（候选区域）
-#     candidate_mask = mask_a & (~mask_b)  # shape [H, W]
-#     candidate_mask = candidate_mask & (logits > threshold)
-#     candidate_indices = candidate_mask.nonzero(as_tuple=False)  # [N, 2], 每行是 (i, j)
-
-#     N = candidate_indices.size(0)
-#     if N == 0:
-#         raise ValueError("No candidates available in mask_a but not in mask_b.")
-
-#     if N < num:
-#         print(f"Warning: Only {N} candidates available, but {num} requested. Using all.")
-#         num = N
-
-#     # 2. 获取候选像素对应的 logits 值
-#     candidate_logits = logits[candidate_mask]  # [N]
-
-#     # 3. 按 logits 排序，然后均匀选择 num 个索引（保证分布均匀）
-#     sorted_indices_in_candidates = torch.argsort(candidate_logits)
-    
-#     # 均匀采样：从 0 到 N-1 中均匀选择 num 个位置
-#     step = N / num
-#     selected_positions = [int(step * i + step / 2) for i in range(num)]  # 取每段中点
-#     selected_positions = torch.clamp(torch.tensor(selected_positions), 0, N - 1).long()
-
-#     # 得到在候选列表中的索引
-#     selected_in_candidates = sorted_indices_in_candidates[selected_positions]
-
-#     # 4. 获取这些像素在原图中的坐标
-#     selected_coords = candidate_indices[selected_in_candidates]  # [num, 2]
-
-#     # 5. 构造输出 mask_c = mask_b + 新选出的 num 个像素
-#     mask_c = mask_b.clone()
-#     mask_c[selected_coords[:, 0], selected_coords[:, 1]] = True
-
-#     return mask_c 
-
-# def select_uniform_logits_pixels(logits, mask_a, mask_b, num):
-#     """
-#     改进版：确保选出的 num 个像素对应的 logits 值在数值空间上均匀分布。
-#     使用分桶策略（值域划分），在每个桶中选择最接近中心的像素。
-#     """
-#     # 类型处理
-#     if mask_a.dtype == torch.int:
-#         mask_a = mask_a.bool()
-#     if mask_b.dtype == torch.int:
-#         mask_b = mask_b.bool()
-
-#     if logits.dim() == 3:
-#         logits = logits.squeeze(0)  # [H, W]
-
-#     H, W = logits.shape
-
-#     # 1. 候选区域：mask_a 中但不在 mask_b 中
-#     candidate_mask = mask_a & (~mask_b)
-#     candidate_indices = candidate_mask.nonzero(as_tuple=False)  # [N, 2]
-#     N = candidate_indices.size(0)
-
-#     if N == 0:
-#         return 
-#         # raise ValueError("No candidates available in mask_a but not in mask_b.")
-#     if N < num:
-#         print(f"Warning: Only {N} candidates, using all.")
-#         num = N
-
-#     # 提取候选 logits 值
-#     candidate_logits_vals = logits[candidate_mask]  # [N]
-#     print("-------------")
-#     print(candidate_logits_vals)
-
-#     # 2. 定义值域范围
-#     min_val = candidate_logits_vals.min().item()
-#     max_val = candidate_logits_vals.max().item()
-#     max_val = max_val - (max_val - min_val) / 2
-
-#     # 避免除零（所有值相等）
-#     if abs(max_val - min_val) < 1e-6:
-#         # 所有值几乎相等，随便选 num 个
-#         selected_indices = torch.randperm(N)[:num]
-#         selected_coords = candidate_indices[selected_indices]
-#     else:
-#         # 3. 划分 num 个桶（每个桶代表一个值区间）
-#         bin_edges = torch.linspace(min_val, max_val, steps=num+1, device=logits.device)
-#         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2  # 每个桶的理想中心值
-
-#         selected_coords = []
-
-#         # 对每个桶，找最接近中心值的候选像素
-#         for center in bin_centers:
-#             # 计算候选值与该桶中心的绝对误差
-#             distances = torch.abs(candidate_logits_vals - center)
-#             # 找最小距离的索引
-#             best_idx = torch.argmin(distances)
-#             # 获取坐标
-#             coord = candidate_indices[best_idx]
-#             selected_coords.append(coord)
-
-#             # 可选：移除已选点，避免重复（防止所有桶都选同一个点）
-#             # 但若 num 接近 N，移除太多会导致后续桶无候选，所以只在必要时做
-#             if len(selected_coords) < num:  # 最后一个不用移
-#                 # 标记已选，从候选中移除
-#                 mask = torch.ones(candidate_logits_vals.shape, dtype=torch.bool, device=logits.device)
-#                 mask[best_idx] = False
-#                 candidate_logits_vals = candidate_logits_vals[mask]
-#                 candidate_indices = candidate_indices[mask]
-#                 # 注意：这会改变索引，需持续更新
-
-#         selected_coords = torch.stack(selected_coords)
-
-#     # 4. 构造最终 mask_c = mask_b + 新选像素
-#     mask_c = mask_b.clone()
-#     for i in range(selected_coords.size(0)):
-#         h, w = selected_coords[i]
-#         mask_c[h, w] = True
-
-#     return mask_c
-
-
 # 辅助函数：用于 fallback 的独立均匀采样函数
 def select_uniform_logits_pixels_v2(logits, mask_a, mask_b, num, num_bins=20):
     """简化版：在 mask_a \ mask_b 中按值域分桶均匀采样"""
@@ -1256,128 +1113,6 @@ def get_connected_mask_long_side(mask):
     # 返回长边
     return height, width
 
-# def compute_weighted_variance(logits: torch.Tensor, mask: torch.Tensor, top_k: int = None):
-#     """
-#     正确实现：对每个像素 (i,j)：
-#     - 如果它在 mask 中，先从 mask 点集中剔除自己
-#     - 然后在剩余点中选最近的 top_k 个点（不足则全取）
-#     - 计算加权均值和方差（情况一：仅这些点；情况二：再加入当前像素）
-
-#     Args:
-#         logits: (H, W)
-#         mask: (H, W) 二值
-#         top_k: int, 使用最近的 top_k 个 mask 点（剔除自己后）
-
-#     Returns:
-#         var_wo: (H, W) 不包含当前像素的加权方差
-#         var_w:  (H, W) 包含当前像素的加权方差
-#     """
-#     assert logits.shape == mask.shape
-#     device = logits.device
-#     H, W = logits.shape
-
-#     # 获取所有 mask 点
-#     mask_positions = mask.nonzero(as_tuple=False)  # (N, 2)
-#     N = len(mask_positions)
-#     if N == 0:
-#         var_wo = torch.zeros_like(logits)
-#         var_w = torch.zeros_like(logits)
-#         return var_wo, var_w
-
-#     mask_logits_vals = logits[mask_positions[:, 0], mask_positions[:, 1]]  # (N,)
-
-#     # 预分配输出
-#     var_wo = torch.zeros(H, W, device=device)
-#     var_w = torch.zeros(H, W, device=device)
-
-#     # # 遍历每个像素
-#     # for i in range(H):
-#     #     for j in range(W):
-#     #         # 当前像素坐标
-#     #         pos = torch.tensor([i, j], device=device)
-
-#     #         # 是否在 mask 中
-#     #         in_mask = mask[i, j] > 0
-
-#     #         # 获取候选点集：如果当前像素在 mask 中，则剔除自己
-#     #         if in_mask and N > 1:
-#     #             # 找到不是 (i,j) 的 mask 点索引
-#     #             not_self = (mask_positions[:, 0] != i) | (mask_positions[:, 1] != j)
-#     #             candidate_indices = torch.nonzero(not_self, as_tuple=False).squeeze(-1)
-#     #             if len(candidate_indices) == 0:
-#     #                 # 剔除后无点（如 mask 只有自己）
-#     #                 selected_positions = torch.empty(0, 2, device=device)
-#     #                 selected_logits = torch.empty(0, device=device)
-#     #             else:
-#     #                 selected_positions = mask_positions[candidate_indices]
-#     #                 selected_logits = mask_logits_vals[candidate_indices]
-#     #         elif in_mask and N == 1:
-#     #             # 自身是唯一 mask 点，剔除后为空
-#     #             selected_positions = torch.empty(0, 2, device=device)
-#     #             selected_logits = torch.empty(0, device=device)
-#     #         else:
-#     #             # 当前像素不在 mask 中，使用全部点
-#     #             selected_positions = mask_positions
-#     #             selected_logits = mask_logits_vals
-
-#     #         # 候选点数量
-#     #         M = len(selected_positions)
-#     #         k_use = top_k if top_k is not None else M
-#     #         k_use = min(k_use, M)
-
-#     #         if k_use <= 0:
-#     #             # 情况一：无邻居 → 方差为 0
-#     #             var_wo[i, j] = 0.0
-#     #             # 情况二：加入自己 → 单点方差为 0
-#     #             var_w[i, j] = 0.0
-#     #             continue
-
-#     #         # 选取最近的 k_use 个点
-#     #         dists = torch.sqrt(((selected_positions - pos) ** 2).sum(dim=1))  # (M,)
-#     #         _, idx = torch.topk(dists, k_use, largest=False)
-#     #         topk_positions = selected_positions[idx]  # (k_use, 2)
-#     #         topk_logits = selected_logits[idx]  # (k_use,)
-#     #         topk_dists = dists[idx]  # (k_use,)
-
-#     #         # 动态归一化：基于 min/max 距离
-#     #         d_min = topk_dists.min()
-#     #         d_max = topk_dists.max()
-#     #         eps = 1e-8
-#     #         normalized_d = (topk_dists - d_min) / (d_max - d_min + eps)
-#     #         weights = 1 - normalized_d
-#     #         weights = torch.clamp(weights, min=0.0)  # (k_use,)
-
-#     #         # === 情况一：仅这些点（已剔除自己）===
-#     #         weighted_sum = (weights * topk_logits).sum()
-#     #         total_weight = weights.sum()
-#     #         if total_weight > 0:
-#     #             mean_wo = weighted_sum / total_weight
-#     #             var_wo[i, j] = (weights * (topk_logits - mean_wo) ** 2).sum() / total_weight
-#     #         else:
-#     #             var_wo[i, j] = 0.0
-
-#     #         # === 情况二：加入当前像素 ===
-#     #         current_logit = logits[i, j].item()
-
-#     #         # 当前像素距离为 0
-#     #         current_d = torch.tensor(0.0, device=device)
-#     #         normalized_current_d = (current_d - d_min) / (d_max - d_min + eps)
-#     #         current_weight = 1 - normalized_current_d
-#     #         current_weight = max(current_weight, 0.0)
-
-#     #         # 合并
-#     #         extended_logits = torch.cat([topk_logits, torch.tensor([current_logit], device=device)])
-#     #         extended_weights = torch.cat([weights, torch.tensor([current_weight], device=device)])
-
-#     #         ext_weight_sum = extended_weights.sum()
-#     #         if ext_weight_sum > 0:
-#     #             mean_w = (extended_weights @ extended_logits) / ext_weight_sum
-#     #             var_w[i, j] = (extended_weights @ (extended_logits - mean_w) ** 2) / ext_weight_sum
-#     #         else:
-#     #             var_w[i, j] = 0.0
-
-#     return var_wo, var_w
-
 def compute_weighted_mean_variance(logits: torch.Tensor, mask: torch.Tensor, top_k: int = None):
     """
     计算每个像素在 mask 区域内基于距离加权的方差：
@@ -1444,41 +1179,6 @@ def compute_weighted_mean_variance(logits: torch.Tensor, mask: torch.Tensor, top
         topk_indices = topk_indices_full
         valid_mask = torch.ones_like(topk_indices, dtype=torch.bool)  # (H, W, k_pad)
 
-    # # 确定输出维度
-    # k_use = N if top_k is None else min(top_k, N)
-    # k_pad = top_k if top_k is not None else N
-
-    # # 如果 N < k_pad，padding inf
-    # if N < k_pad:
-    #     pad_size = k_pad - N
-    #     padded_dists = torch.cat([all_dists, all_dists.new_full((H, W, pad_size), float('inf'))], dim=-1)
-    # else:
-    #     padded_dists = all_dists
-
-    # print(padded_dists[5,5])
-    # # 获取 top-k 最近点的 indices 和 distances
-    # topk_dists, topk_indices = torch.topk(padded_dists, k_pad, dim=-1, largest=False)  # (H, W, k_pad)
-    # print(topk_indices[5,5])
-
-    # # 获取对应的 logits 值
-    # if N < k_pad:
-    #     padded_logits = torch.cat([
-    #         mask_logits_vals.unsqueeze(0).unsqueeze(0).expand(H, W, N),
-    #         mask_logits_vals.new_zeros(H, W, pad_size)
-    #     ], dim=-1)
-    # else:
-    #     padded_logits = mask_logits_vals.unsqueeze(0).unsqueeze(0).expand(H, W, N)
-    # print(padded_logits[5,5])
-    # topk_logits = torch.gather(padded_logits, dim=-1, index=topk_indices)  # (H, W, k_pad)
-    # print(topk_logits[5,5])
-
-    # # 构建 valid_mask：原始索引 < N 才有效
-    # valid_mask = (topk_indices < N)  # (H, W, k_pad)
-
-    # === 关键：构建 self_mask ===
-    # 我们要找到：topk_indices 中哪些是“指向当前像素自身”的？
-    # 当前像素在 mask 中的位置索引：我们需要知道 (i,j) 在 mask_positions 中的 index（如果有）
-
     # 创建一个映射：(y, x) -> index in mask_positions
     # 使用 coords_to_idx: (H, W)，不在 mask 中的设为 -1
     coords_to_idx = -torch.ones((H, W), dtype=torch.long, device=device)
@@ -1503,7 +1203,7 @@ def compute_weighted_mean_variance(logits: torch.Tensor, mask: torch.Tensor, top
     d_min = torch.zeros((H, W,k_pad), device=logits.device, dtype=torch.float32)
     eps = 1e-8
     sigma = (d_max - d_min + eps)
-    weights = torch.exp(2.5 * -(topk_dists - d_min) / sigma)  # (H, W, k_pad)
+    weights = torch.exp(-(topk_dists - d_min) / sigma)  # (H, W, k_pad)
     # print(weights[5,5])
 
     # 屏蔽自身：如果当前像素在 mask 中且被选入 topk，则权重置0
@@ -1511,7 +1211,6 @@ def compute_weighted_mean_variance(logits: torch.Tensor, mask: torch.Tensor, top
     float_mask = valid_mask & ~is_self_and_valid
     weights_masked = torch.where(float_mask, weights_masked, torch.zeros_like(weights_masked))  # 同时保证 pad 和 self 都不参与
     # print(float_mask[5,5])
-    # print(weights_masked[5,5])
 
     total_weight = weights_masked.sum(dim=-1, keepdim=True)  # (H, W, 1)
     safe_weight = torch.where(total_weight > 0, total_weight, torch.ones_like(total_weight))
@@ -1843,6 +1542,10 @@ def add_uniform_points_v2(mask, seed, num1):
 
 def add_uniform_points_v3(logits, mask, seed, num1, mode):
     if mode == "fg":
+        credit_mask = mask * (logits > 0.8)
+        target_mask = credit_mask * ~seed
+        if target_mask.sum() > 0:
+            return add_uniform_points_cuda(credit_mask, seed, num1)
         credit_mask = mask * (logits > 0.5)
         target_mask = credit_mask * ~seed
         if target_mask.sum() > 0:
@@ -1853,6 +1556,10 @@ def add_uniform_points_v3(logits, mask, seed, num1, mode):
             return add_uniform_points_cuda(credit_mask, seed, num1)
         return add_uniform_points_cuda(mask, seed, num1)
     else:
+        credit_mask = mask * (logits < 0.02)
+        target_mask = credit_mask * ~seed
+        if target_mask.sum() > 0:
+            return add_uniform_points_cuda(credit_mask, seed, num1)
         credit_mask = mask * (logits < 0.05)
         target_mask = credit_mask * ~seed
         if target_mask.sum() > 0:
