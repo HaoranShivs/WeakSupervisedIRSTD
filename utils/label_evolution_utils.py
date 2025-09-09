@@ -66,10 +66,6 @@ def examine_iou(final_target, pesudo_label, image, iou_treshold=0.5):
     image(torch.Tensor): (H,W)上轮的伪标签。
     iou_treshold (float): iou阈值，默认为0.5。
     """
-    if pesudo_label.float().sum() < 4 and final_target.float().sum() >= 4:
-        return final_target
-    if pesudo_label.float().sum() >= 4 and final_target.float().sum() < 4:
-        return pesudo_label
     if (final_target * pesudo_label).float().sum() >= 4:
         iou = iou_score(final_target.numpy() > 0.1, pesudo_label.numpy() > 0.1)
         # print(iou)
@@ -80,17 +76,12 @@ def examine_iou(final_target, pesudo_label, image, iou_treshold=0.5):
     else :
         return torch.zeros_like(pesudo_label)
     
-def advice_region_antiadvice(coors, coors2, target_mask, pesudo_label, image, iou_treshold=0.5):
-    target_mask_ = target_mask[coors[0]:coors[1], coors[2]:coors[3]]
-    pesudo_label_ = pesudo_label[coors[0]:coors[1], coors[2]:coors[3]]
-    image_ = image[coors[0]:coors[1], coors[2]:coors[3]]
-    advice = examine_iou(target_mask_, pesudo_label_, image_, iou_treshold)
-    if advice.float().sum() < 4:
-        antiadvice = torch.ones_like(advice)
-        antiadvice[coors2[0]-coors[0]:coors2[1]-coors[0], coors2[2]-coors[2]:coors2[3]-coors[2]] = 0
-    else:
-        antiadvice = torch.zeros_like(advice)
-    return advice, antiadvice
+# def advice_region(coors, coors2, target_mask, pesudo_label, image, iou_treshold=0.5):
+#     target_mask_ = target_mask[coors[0]:coors[1], coors[2]:coors[3]]
+#     pesudo_label_ = pesudo_label[coors[0]:coors[1], coors[2]:coors[3]]
+#     image_ = image[coors[0]:coors[1], coors[2]:coors[3]]
+#     advice = examine_iou(target_mask_, pesudo_label_, image_, iou_treshold)
+#     return advice
 
 
 def expand_and_contract_mask(mask, d1, d2):

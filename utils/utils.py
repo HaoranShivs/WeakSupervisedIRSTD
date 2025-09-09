@@ -30,8 +30,7 @@ def iou_score(pred, target):
     intersection_sum = np.sum(intersection, axis=(0,1))
     pred_sum = np.sum(pred, axis=(0,1))
     target_sum = np.sum(target, axis=(0,1))
-    score = (intersection_sum + smooth) / \
-            (pred_sum + target_sum - intersection_sum + smooth)
+    score = (intersection_sum) / (pred_sum + target_sum - intersection_sum + smooth)
 
     score = np.mean(score)
     return score

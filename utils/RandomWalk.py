@@ -712,6 +712,20 @@ class RandomWalkPixelLabeling(nn.Module):
                 fg_mask, bg_mask = fg_mask_new.float() + fg_mask*decay_rate, bg_mask_new.float() + bg_mask*decay_rate
                 fg_mask, bg_mask = torch.clamp(fg_mask, min=0.0, max=1.0), torch.clamp(bg_mask, min=0.0, max=1.0)
             
+            result_total = torch.zeros_like(result_)
+            for i in range(10):
+                noise = torch.rand(GI.shape)
+                GI = grad_intensity * (1-noise_ratio) + noise * noise_ratio
+
+                local_max_num = 9 if max_num * fg_ratio < 9 else max_num * fg_ratio
+                _, fg_vwo, _, fg_v = compute_weighted_mean_variance(GI, fg_mask > 0.1, int(local_max_num))
+
+                local_min_num = 9 if min_num * bg_ratio < 9 else min_num * bg_ratio
+                _, bg_vwo, _, bg_v = compute_weighted_mean_variance(GI, bg_mask > 0.1, int(local_min_num))
+                result_total += fg_v/(fg_vwo+1e-8) -bg_v/(bg_vwo+1e-8)   #(H,W)
+            result_total = keep_negative_by_top3_magnitude_levels(result_total, target_size=fg_area.sum())
+            result = torch.where(result_total < 0., torch.ones_like(GI), torch.zeros_like(GI)).bool()
+
             # fig = plt.figure(figsize=(25, 5))
             # plt.subplot(1, 5, 1)
             # plt.imshow(GI.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
@@ -751,7 +765,7 @@ class RandomWalkPixelLabeling(nn.Module):
 
         return result
     
-    def evolve_target(self, grad_intensity, target_mask, anti_advice, image, pt_label):
+    def evolve_target(self, grad_intensity, target_mask, image, pt_label):
         """
         Args:
             grad_intensity: 梯度强度 [H, W]
@@ -763,7 +777,7 @@ class RandomWalkPixelLabeling(nn.Module):
         H, W = grad_intensity.shape
         if target_mask.float().sum() < 4:
             print("initiated one")
-            result = self.initial_target(grad_intensity, pt_label, 0.1, fg_area=1-anti_advice.float(), bg_area=anti_advice)
+            result = self.initial_target(grad_intensity, pt_label, 0.1)
             return result
         GI = grad_intensity
         image = (image - image.min())/(image.max() - image.min())
@@ -881,12 +895,10 @@ class RandomWalkPixelLabeling(nn.Module):
                 # bg_mask = torch.where(bg_mask >= fg_mask, bg_mask, torch.zeros_like(bg_mask))
             
             result_total = torch.zeros_like(result_)
+            fg_ratio, bg_ratio = 0.4, 0.4
             for i in range(10):
                 noise = torch.rand(GI.shape)
                 GI = grad_intensity * (1-noise_ratio) + noise * noise_ratio
-
-                fg_ratio = max(fg_ratio, 0.20)
-                bg_ratio = max(bg_ratio, 0.20)
 
                 local_max_num = 9 if max_num * fg_ratio < 9 else max_num * fg_ratio
                 _, fg_vwo, _, fg_v = compute_weighted_mean_variance(GI, fg_mask > 0.1, int(local_max_num))
@@ -894,23 +906,26 @@ class RandomWalkPixelLabeling(nn.Module):
                 local_min_num = 9 if min_num * bg_ratio < 9 else min_num * bg_ratio
                 _, bg_vwo, _, bg_v = compute_weighted_mean_variance(GI, bg_mask > 0.1, int(local_min_num))
                 result_total += fg_v/(fg_vwo+1e-8) -bg_v/(bg_vwo+1e-8)   #(H,W)
+                
+                fg_ratio -= 0.02
+                bg_ratio -= 0.02
             result_total = keep_negative_by_top3_magnitude_levels(result_total, target_size=fg_area.sum())
             result = torch.where(result_total < 0., torch.ones_like(GI), torch.zeros_like(GI)).bool()
             result = filter_mask_by_points(result, target_mask, kernel_size=1).bool()
 
-            fig = plt.figure(figsize=(25, 5))
-            plt.subplot(1, 5, 1)
-            plt.imshow(GI.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
-            plt.subplot(1, 5, 2)
-            plt.imshow(result_total, cmap='gray')
-            plt.subplot(1, 5, 3)
-            plt.imshow(bg_area, cmap='gray', vmax=1.0, vmin=0.0)
-            plt.show(block=False)
-            plt.subplot(1, 5, 4)
-            plt.imshow(fg_mask.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
-            plt.subplot(1, 5, 5)
-            plt.imshow(bg_mask.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
-            a = input()
+            # fig = plt.figure(figsize=(25, 5))
+            # plt.subplot(1, 5, 1)
+            # plt.imshow(GI.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
+            # plt.subplot(1, 5, 2)
+            # plt.imshow(result_total, cmap='gray')
+            # plt.subplot(1, 5, 3)
+            # plt.imshow(bg_area, cmap='gray', vmax=1.0, vmin=0.0)
+            # plt.show(block=False)
+            # plt.subplot(1, 5, 4)
+            # plt.imshow(fg_mask.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
+            # plt.subplot(1, 5, 5)
+            # plt.imshow(bg_mask.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
+            # a = input()
 
             fg_area_new = result
             bg_area_new = ~result

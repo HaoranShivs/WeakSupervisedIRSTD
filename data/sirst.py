@@ -26,6 +26,7 @@ class IRSTD1kDataset(Data.Dataset):
         pt_label=False,
         offset = 0,
         pesudo_label=False,
+        preded_label=False,
         augment=True,
         turn_num='',
         target_mix = False,
@@ -47,6 +48,7 @@ class IRSTD1kDataset(Data.Dataset):
         self.pt_label = pt_label
         self.offset = offset
         self.pesudo_label = pesudo_label
+        self.preded_label = preded_label
         self.aug = augment
         self.turn_num = turn_num
         self.target_mix = target_mix
@@ -67,33 +69,30 @@ class IRSTD1kDataset(Data.Dataset):
         name = self.names[i]
         img_path = osp.join(self.data_dir, "images", name)
         pesudo_label_path = osp.join(self.data_dir, f'pixel_pseudo_label{self.turn_num}', name)
+        preded_label_path = osp.join(self.data_dir, f'preded_label/{self.turn_num}', name)
         label_path = osp.join(self.data_dir, "masks", name)
+
+        img, mask= cv2.imread(img_path, 0), cv2.imread(label_path, 0)
+        img, mask= torch.from_numpy(img).unsqueeze(0).float(), torch.from_numpy(mask).unsqueeze(0).float()
         
         if self.pesudo_label:
-            img, mask, pesudo_label = cv2.imread(img_path, 0), cv2.imread(label_path, 0), cv2.imread(pesudo_label_path, 0)
-            img, mask, pesudo_label = torch.from_numpy(img).unsqueeze(0), torch.from_numpy(mask).unsqueeze(0), torch.from_numpy(pesudo_label).unsqueeze(0)  
-            img, mask = img.float(), torch.cat([mask, pesudo_label], dim=0).float()
-        else:
-            img, mask= cv2.imread(img_path, 0), cv2.imread(label_path, 0)
-            img, mask= torch.from_numpy(img).unsqueeze(0).float(), torch.from_numpy(mask).unsqueeze(0).float()
+            pesudo_label = cv2.imread(pesudo_label_path, 0)
+            pesudo_label = torch.from_numpy(pesudo_label).unsqueeze(0).float()
+            mask = torch.cat([mask, pesudo_label], dim=0)
+        if self.preded_label:
+            preded_label = cv2.imread(preded_label_path, 0)
+            preded_label = torch.from_numpy(preded_label).unsqueeze(0).float()
+            mask = torch.cat([mask, preded_label], dim=0)
         
         img, mask = self.aug_transformer(img, mask)
 
-        img, mask = img / 255.0, mask.unsqueeze(1) / 255.0
+        img, mask = img / 255.0, mask / 255.0
 
         if self.pt_label:
-            pt_label = mask2point(mask[0], img, self.offset)
+            pt_label = mask2point(mask[0].unsqueeze(0), img, self.offset)
             mask[0] = pt_label
 
-        # elif self.target_mix:
-        #     if self.pesudo_label:
-        #         img, mask[1] = self.__mix_target(img, mask[1])
-        #     else:
-        #         img, mask[0] = self.__mix_target(img, mask[0])
-        if self.pesudo_label:
-            return img, mask[0], mask[1]
-        else:
-            return img, mask[0]
+        return img, mask
 
     def __len__(self):
         return len(self.names)
@@ -111,6 +110,7 @@ class NUDTDataset(Data.Dataset):
         pt_label=False,
         offset = 0,
         pesudo_label=False,
+        preded_label=False,
         augment=True,
         turn_num='',
         target_mix = False,
@@ -131,6 +131,7 @@ class NUDTDataset(Data.Dataset):
         self.pt_label = pt_label
         self.offset = offset
         self.pesudo_label = pesudo_label
+        self.preded_label = preded_label
         self.aug = augment
         self.turn_num = turn_num
         self.target_mix = target_mix
@@ -144,40 +145,37 @@ class NUDTDataset(Data.Dataset):
         # self.target_trans = transforms.Compose([
         #     transforms.RandomAffine(degrees=180, translate=(0.3, 0.3)),
         #     transforms.RandomHorizontalFlip()])  # 随机水平翻转
-        self.gaussian_filter3 = transforms.GaussianBlur(kernel_size=3, sigma=(0.3, 0.5)) if target_mix else None
+        # self.gaussian_filter3 = transforms.GaussianBlur(kernel_size=3, sigma=(0.3, 0.5)) if target_mix else None
         # self.gaussian_filter9 = transforms.GaussianBlur(kernel_size=9, sigma=(0.3, 0.5)) if target_mix else None
 
     def __getitem__(self, i):
         name = self.names[i]
         img_path = osp.join(self.data_dir, "images", name)
         pesudo_label_path = osp.join(self.data_dir, f'pixel_pseudo_label{self.turn_num}', name)
+        preded_label_path = osp.join(self.data_dir, f'preded_label/{self.turn_num}', name)
         label_path = osp.join(self.data_dir, "masks", name)
+
+        img, mask= cv2.imread(img_path, 0), cv2.imread(label_path, 0)
+        img, mask= torch.from_numpy(img).unsqueeze(0).float(), torch.from_numpy(mask).unsqueeze(0).float()
         
         if self.pesudo_label:
-            img, mask, pesudo_label = cv2.imread(img_path, 0), cv2.imread(label_path, 0), cv2.imread(pesudo_label_path, 0)
-            img, mask, pesudo_label = torch.from_numpy(img).unsqueeze(0), torch.from_numpy(mask).unsqueeze(0), torch.from_numpy(pesudo_label).unsqueeze(0)  
-            img, mask = img.float(), torch.cat([mask, pesudo_label], dim=0).float()
-        else:
-            img, mask= cv2.imread(img_path, 0), cv2.imread(label_path, 0)
-            img, mask= torch.from_numpy(img).unsqueeze(0).float(), torch.from_numpy(mask).unsqueeze(0).float()
+            pesudo_label = cv2.imread(pesudo_label_path, 0)
+            pesudo_label = torch.from_numpy(pesudo_label).unsqueeze(0).float()
+            mask = torch.cat([mask, pesudo_label], dim=0)
+        if self.preded_label:
+            preded_label = cv2.imread(preded_label_path, 0)
+            preded_label = torch.from_numpy(preded_label).unsqueeze(0).float()
+            mask = torch.cat([mask, preded_label], dim=0)
         
         img, mask = self.aug_transformer(img, mask)
 
-        img, mask = img / 255.0, mask.unsqueeze(1) / 255.0
+        img, mask = img / 255.0, mask / 255.0
 
         if self.pt_label:
-            pt_label = mask2point(mask[0], img, self.offset)
+            pt_label = mask2point(mask[0].unsqueeze(0), img, self.offset)
             mask[0] = pt_label
 
-        # elif self.target_mix:
-        #     if self.pesudo_label:
-        #         img, mask[1] = self.__mix_target(img, mask[1])
-        #     else:
-        #         img, mask[0] = self.__mix_target(img, mask[0])
-        if self.pesudo_label:
-            return img, mask[0], mask[1]
-        else:
-            return img, mask[0]
+        return img, mask
     
     def __len__(self):
         return len(self.names)

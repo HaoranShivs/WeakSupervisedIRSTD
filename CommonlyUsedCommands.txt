@@ -1,1 +1,5 @@
 python pseudo_label_generate.py --dataset nudt --save-folder 2.99 --last-turnnum 1.35 --model-path result/20250828T18-31-57_ws4.1_1.35_nudt --debug 1
+python pseudo_label_generate.py --dataset nudt --save-folder 3.7 --preded-label 1 --last-turnnum 2.23 --model-path result/20250907T23-49-32_ws4.3_2.23_nudt
+
+
+bash run.sh -f ../IRSTD/NUDT-SIRST/trainval/pixel_pseudo_label3.8.zip -d nudt -e 200 -b 16 -s 256 -v 0 -n ws4.3_3.8 -l 10
