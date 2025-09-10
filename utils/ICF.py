@@ -9,7 +9,7 @@ from utils.sum_val_filter import min_pool2d
 from utils.utils import compute_mask_pixel_distances_with_coords, extract_local_windows, min_positive_per_local_area, \
     compute_local_extremes, compute_weighted_mean_variance, random_select_from_prob_mask, select_complementary_pixels, \
     get_connected_mask_long_side, keep_negative_by_top3_magnitude_levels, add_uniform_points_cuda, big_num_mask, add_uniform_points_v2, \
-    add_uniform_points_v3, get_min_value_outermost_mask, periodic_function
+    add_uniform_points_v3, get_min_value_outermost_mask, periodic_function, smooth_optim, bilateral_smooth_logits
 from utils.adaptive_filter import filter_mask_by_points
 from utils.refine import dilate_mask, erode_mask
 
@@ -183,7 +183,7 @@ def initial_target(grad_intensity: torch.Tensor, pt_label: torch.Tensor, thresho
 
     return result
     
-def evolve_target(grad_intensity, target_mask, image, pt_label):
+def evolve_target(grad_intensity, target_mask, image, restrain_mask, pt_label):
     """
     Args:
         grad_intensity: 梯度强度 [H, W]
@@ -198,7 +198,7 @@ def evolve_target(grad_intensity, target_mask, image, pt_label):
         result = initial_target(grad_intensity, pt_label, 0.1)
         return result
     GI = grad_intensity
-    image = (image - image.min())/(image.max() - image.min())
+    image = (image - image.min())/(image.max() - image.min() + 1e-8)
     # 找局部最高值，再梯度强度➗局部最大值，进行局部归一化
     local_max = F.max_pool2d(GI.unsqueeze(0).unsqueeze(0), (5,5), stride=1, padding=2)
     local_norm_image = grad_intensity / (local_max + 1e-11)
@@ -216,18 +216,10 @@ def evolve_target(grad_intensity, target_mask, image, pt_label):
     converge_time = 0
     for iter1 in range(50):
         fg_mask = fg_area * summit_mask
-        # bg_mask = bg_area * summit_mask
-        # # 生成空间均匀的seed
-        # fg_mask = (GI == GI.max()) * fg_area
-        # fg_seed_num = fg_area.sum() // 8
-        # # fg_seed_num = fg_area.sum() // 8 - (fg_area*summit_mask).sum()
-        # fg_mask = add_uniform_points_cuda(fg_area, fg_mask, int(fg_seed_num))
 
         bg_mask = torch.zeros_like(GI)
         bg_seed_num = bg_area.sum()/(fg_area.sum()+1)*fg_mask.sum()
-        # bg_seed_num = bg_area.sum() // 8 - (bg_area*summit_mask).sum()
-        # print("bg_seed_num")
-        # print(bg_area.sum(), fg_area.sum(), fg_mask.sum(), bg_seed_num)
+
         bg_mask = add_uniform_points_v3(GI, bg_area.bool(), bg_mask.bool(), int(bg_seed_num), mode='bg')
         # result_num_ratio = fg_area.sum() / (fg_area.sum() + bg_area.sum())
         for iter2 in range(100):
@@ -263,14 +255,6 @@ def evolve_target(grad_intensity, target_mask, image, pt_label):
                 # result_ = bg_v/(fg_v + 1e-8) - bg_vwo/(fg_vwo + 1e-8)
                 # print(fg_ratio, int(local_max_num), int(local_min_num))
 
-                # # print(GI)
-                # print("result_")
-                # print(result_)
-                # print(fg_vwo)
-                # print(bg_vwo)
-                # print(fg_v)
-                # print(bg_v)
-
                 # plt.subplot(1, 7, 4)
                 # plt.imshow((bg_v/(bg_vwo+1e-8)-1), cmap='gray'), plt.title(f'max:{(bg_v/(bg_vwo+1e-8)-1).max()}')
                 # plt.subplot(1, 7, 5)
@@ -288,12 +272,35 @@ def evolve_target(grad_intensity, target_mask, image, pt_label):
             # plt.show(block=False)
             # a = input()
 
+            # result__ = result_ * ~((fg_mask>0.1) | (bg_mask>0.1))
+
+            # result_pos = (result__ > 0)*result__
+            # result_pos = result__ / (result_.max() + 1e-8)
+
+            # result_neg = (result__ < 0) * (-result__)
+            # result_neg = result_neg / (result_neg.max() + 1e-8)
+            # order = torch.max(result_pos, result_neg)
+
+            # seedlize_candi = big_num_mask(order, int(H*W*0.1))
+
+            # print(order)
+            # print(seedlize_candi)
+
+            # plt.subplot(1, 7, 6)
+            # plt.imshow(result_pos, cmap='gray', vmax=1.0, vmin=0.)
+            # plt.subplot(1, 7, 7)
+            # plt.imshow(result_neg, cmap='gray', vmax=1.0, vmin=0.)
+            # plt.show(block=False)
+            # a = input()
+
             fg_seed_num = int(0.1*max_num)
+            # fg_seed_num = (seedlize_candi * (fg_area > 0.1)).sum()
             fg_seed_num = fg_seed_num if fg_seed_num > 2 else 2
             fg_mask_new = add_uniform_points_v3(GI, (fg_area > 0.1) * (result_ < 0.), fg_mask>0.1, int(fg_seed_num), mode='fg')
             fg_mask_new = fg_mask_new.bool() * result
 
             bg_seed_num = int(0.1*min_num)
+            # bg_seed_num = (seedlize_candi * (bg_area > 0.1)).sum()
             bg_seed_num = bg_seed_num if bg_seed_num > 2 * bg_area.sum()/fg_area.sum() else 2 * bg_area.sum()/fg_area.sum()
             bg_mask_new = add_uniform_points_v3(GI, (bg_area > 0.1) * (result_ > 0.), bg_mask>0.1, int(bg_seed_num), mode='bg')
             bg_mask_new = bg_mask_new.bool() * ~result
@@ -327,6 +334,7 @@ def evolve_target(grad_intensity, target_mask, image, pt_label):
             
             fg_ratio -= 0.02
             bg_ratio -= 0.02
+        
         result_total = keep_negative_by_top3_magnitude_levels(result_total, target_size=fg_area.sum())
         result = torch.where(result_total < 0., torch.ones_like(GI), torch.zeros_like(GI)).bool()
         result = filter_mask_by_points(result, target_mask, kernel_size=1).bool()
@@ -337,7 +345,7 @@ def evolve_target(grad_intensity, target_mask, image, pt_label):
         # plt.subplot(1, 5, 2)
         # plt.imshow(result_total, cmap='gray')
         # plt.subplot(1, 5, 3)
-        # plt.imshow(bg_area, cmap='gray', vmax=1.0, vmin=0.0)
+        # plt.imshow(result_total, cmap='gray')
         # plt.show(block=False)
         # plt.subplot(1, 5, 4)
         # plt.imshow(fg_mask.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)

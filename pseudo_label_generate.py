@@ -98,17 +98,17 @@ def gradient_expand_one_size(region, scale_weight=[0.5, 0.5, 0.5], dilated_mask=
   # 用单像素宽度的梯度替代模糊边缘的宽的梯度
     grad_mask = local_max_gradient(img_gradient_)
 
-    # # 使用target_mask来增强对应区域的梯度
-    # if eroded_mask is not None:
-    #     img_gradient_ = img_gradient_ * (1 - eroded_mask)
-    # if dilated_mask is not None:
-    #     img_gradient_ = img_gradient_ * dilated_mask.unsqueeze(0).unsqueeze(0)   # (1,24,H,W) *(1,1,H,W)
+    # 使用target_mask来增强对应区域的梯度
+    if eroded_mask is not None:
+        img_gradient_ = img_gradient_ * (1 - eroded_mask)
+    if dilated_mask is not None:
+        img_gradient_ = img_gradient_ * dilated_mask.unsqueeze(0).unsqueeze(0)   # (1,24,H,W) *(1,1,H,W)
     img_gradient_4 = (img_gradient_ - img_gradient_.min())/(img_gradient_.max() - img_gradient_.min() + 1e-11)
 
     img_gradient_4 = grad_mask * img_gradient_
 
     # 扩展梯度
-    grad_boundary = boundary4gradient_expand(img_gradient_4, 1e3)
+    grad_boundary = boundary4gradient_expand(img_gradient_4, 1e20)
     expanded_grad = img_gradient_4
     region_size = region.shape[2] if region.shape[2] > region.shape[3] else region.shape[3]
     for z in range(region_size):
@@ -799,14 +799,14 @@ def label_evolution(image, pt_label, pesudo_label, pred, preded_label=None, view
             final_target = dilate_mask(pt_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], 1)
         # 保存结果
         output[b,0, coors[0]:coors[1], coors[2]:coors[3]] = torch.max(output[b,0, coors[0]:coors[1], coors[2]:coors[3]], final_target)
-        # 显示结果
-        plt.figure(figsize=(30, 6))
-        plt.subplot(151), plt.imshow(region_[0,0], cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(152), plt.imshow(preded_mask, cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(153), plt.imshow(final_target, cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(154), plt.imshow(pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(155), plt.imshow(pred[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
-        plt.show()
+        # # 显示结果
+        # plt.figure(figsize=(30, 6))
+        # plt.subplot(151), plt.imshow(region_[0,0], cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(152), plt.imshow(preded_mask, cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(153), plt.imshow(final_target, cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(154), plt.imshow(pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(155), plt.imshow(pred[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
+        # plt.show()
         # if view:
         #     process_data_view(image[b], region[0,0], pred[b, 0], grad_expand_process_data, target, [100,], target_mapped, treshold_filter_process_data, final_target, output[b,0])
     return output

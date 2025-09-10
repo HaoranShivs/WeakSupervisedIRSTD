@@ -31,7 +31,7 @@ def proper_region(pred, c1, c2):
             break
     # 下边界
     for i in range(mini_size//2, half_size):
-        e1 = c1 + half_size + i
+        e1 = c1 + half_size + i + 1
         if torch.sum(pred_[e1, s2:e2])  < 1:
             break
     # 左边界
@@ -41,7 +41,7 @@ def proper_region(pred, c1, c2):
             break
     # 右边界
     for i in range(mini_size//2, half_size):
-        e2 = c2 + half_size + i
+        e2 = c2 + half_size + i + 1
         if torch.sum(pred_[s1:e1, e2])  < 1:
             break
 
@@ -55,6 +55,7 @@ def proper_region(pred, c1, c2):
     e1_ = e1_ if e1_ < pred.shape[0] - 2 else pred.shape[0] - 2
     s2_ = s2_ if s2_ > 1 else 1
     e2_ = e2_ if e2_ < pred.shape[1] - 2 else pred.shape[1] - 2
+    # print(c1, c2, s1, e1, s2, e2, s1_, e1_, s2_, e2_)
     
     return (int(s1_), int(e1_), int(s2_), int(e2_)), (int(s1), int(e1), int(s2), int(e2))
 

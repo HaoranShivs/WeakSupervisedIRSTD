@@ -2,6 +2,8 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
+import matplotlib.pyplot as plt
+
 import math
 
 
@@ -1321,6 +1323,41 @@ def keep_negative_by_top3_magnitude_levels(x, target_size):
 
     return out * final_keep_mask
 
+def smooth_optim(logits, pos_bias=0.5):
+    H, W = logits.shape
+    # 先对logits进行映射
+    credit_pos = (logits < 0.) * (-logits)
+    credit_neg = (logits > 0.) * logits
+    credit_pos_ = -(credit_pos / (credit_pos.max() + 1e-8) * (1 - pos_bias) + pos_bias * (logits < 0.))
+    credit_neg_ = credit_neg / (credit_neg.max()+ 1e-8)
+    credit = credit_pos_ + credit_neg_  #(H, W)
+
+    padded_credit = F.pad(credit.unsqueeze(0).unsqueeze(0), (1, 1, 1, 1), mode='replicate')
+    smooth_credit = gaussian_blurring_2D(padded_credit, 3, sigma=1)[1:1+H, 1:1+W]   
+
+    smooth_credit_pos = smooth_credit * (smooth_credit < 0.0)
+    smooth_credit_neg = smooth_credit * (smooth_credit > 0.0)
+    smooth_credit_pos_ = (smooth_credit_pos - pos_bias * (logits < 0.)) / (1 - pos_bias) * credit_pos.max()
+    smooth_credit_neg_ = smooth_credit_neg * credit_neg.max()
+    new_logits = smooth_credit_pos_ + smooth_credit_neg_
+
+    fig = plt.figure(figsize=(25, 5))
+    plt.subplot(1, 5, 1)
+    plt.imshow(logits, cmap='gray')
+    plt.subplot(1, 5, 2)
+    plt.imshow(credit, cmap='gray')
+    plt.subplot(1, 5, 3)
+    plt.imshow(smooth_credit, cmap='gray')
+    plt.show(block=False)
+    plt.subplot(1, 5, 4)
+    plt.imshow(smooth_credit_pos_, cmap='gray')
+    plt.subplot(1, 5, 5)
+    plt.imshow(new_logits, cmap='gray')
+    a = input()
+
+    return new_logits
+
+
 def add_uniform_points_cuda(mask, seed, num1, part_ratio=1, logits=None, chunk_size=2048):
     """
     CUDA-friendly version of adding uniformly distributed points.
@@ -1630,4 +1667,60 @@ def periodic_function(t, period, amplitude, phase=0.0):
     x = omega * t + phase  # 相位
 
     return amplitude * (torch.sin(x) + 1) / 2
+
+def bilateral_smooth_logits(logits, image, sigma_spatial=5.0, sigma_value=0.1):
+    """
+    使用 image 作为引导图，对 logits 进行双边平滑。
+    权重 = 空间高斯权重 * 值域高斯权重
+
+    Args:
+        logits: [H, W] 的 tensor
+        image: [H, W] 的 tensor，作为引导图
+        sigma_spatial: 空间距离的标准差（控制多远的像素参与加权）
+        sigma_value: 像素值差异的标准差（控制多相似的像素值才参与加权）
+
+    Returns:
+        smoothed_logits: [H, W] 平滑后的 logits
+    """
+    H, W = logits.shape
+    device = logits.device
+
+    # 创建空间坐标网格
+    y_coords, x_coords = torch.meshgrid(
+        torch.arange(H, device=device),
+        torch.arange(W, device=device),
+        indexing='ij'
+    )  # [H, W]
+
+    # 展平所有坐标和像素值
+    y_flat = y_coords.reshape(-1)  # [H*W]
+    x_flat = x_coords.reshape(-1)  # [H*W]
+    image_flat = image.reshape(-1)  # [H*W]
+    logits_flat = logits.reshape(-1)  # [H*W]
+
+    # 计算空间距离矩阵 (H*W, H*W)
+    dy = y_flat.unsqueeze(1) - y_flat.unsqueeze(0)  # [H*W, H*W]
+    dx = x_flat.unsqueeze(1) - x_flat.unsqueeze(0)
+    spatial_dist_sq = dx**2 + dy**2  # [H*W, H*W]
+
+    # 计算值域差异矩阵
+    value_diff = image_flat.unsqueeze(1) - image_flat.unsqueeze(0)  # [H*W, H*W]
+    value_diff_sq = value_diff ** 2
+
+    # 计算双边权重
+    spatial_weight = torch.exp(-spatial_dist_sq / (2 * sigma_spatial**2))
+    value_weight = torch.exp(-value_diff_sq / (2 * sigma_value**2))
+    bilateral_weight = spatial_weight * value_weight  # [H*W, H*W]
+
+    # 归一化权重（每行和为1）
+    weight_sum = bilateral_weight.sum(dim=1, keepdim=True)  # [H*W, 1]
+    bilateral_weight = bilateral_weight / (weight_sum + 1e-8)  # 避免除零
+
+    # 加权平均 logits
+    smoothed_logits_flat = torch.matmul(bilateral_weight, logits_flat.unsqueeze(1)).squeeze(1)  # [H*W]
+
+    # 恢复形状
+    smoothed_logits = smoothed_logits_flat.view(H, W)
+
+    return smoothed_logits
 
