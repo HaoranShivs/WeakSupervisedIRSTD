@@ -42,6 +42,64 @@ def object_closed_score_v2(region, width_scale):
 
     return torch.exp(-score)
 
+def score_local_region(region, ideal_ratio_low=0.125, ideal_ratio_high=0.25, width_scale=4.0):
+    """
+    评估局部区域 region 的“合适程度”，用于小目标伪标签裁剪。
+    
+    得分基于两个因素：
+      1. 目标物体在 region 中的空间集中度（高斯加权中心性）
+      2. 目标物体占 region 面积的比例是否在理想区间 [ideal_ratio_low, ideal_ratio_high]
+    
+    参数:
+        region (torch.Tensor): [H, W] 二值张量，1 表示目标物体
+        ideal_ratio_low (float): 理想占比下限（如 0.125）
+        ideal_ratio_high (float): 理想占比上限（如 0.25）
+        width_scale (float): 控制高斯中心敏感度，越大越宽松
+    
+    返回:
+        score (torch.Tensor): 标量，范围 [0, 1]，越高表示越合适
+    """
+    H, W = region.shape
+    device = region.device
+
+    total_pixels = H * W
+    object_pixels = region.sum().float()
+
+    if object_pixels == 0:
+        return torch.tensor(0.0, device=device)
+
+    # ===== 1. 计算空间集中度得分（高斯加权） =====
+    i_coords = torch.arange(H, device=device).float()
+    j_coords = torch.arange(W, device=device).float()
+    I, J = torch.meshgrid(i_coords, j_coords, indexing='ij')
+
+    center_i = (H - 1) / 2.0
+    center_j = (W - 1) / 2.0
+
+    dist_i = torch.abs(I - center_i) / (H / 2.0)
+    dist_j = torch.abs(J - center_j) / (W / 2.0)
+    dist = torch.sqrt(dist_i**2 + dist_j**2)
+
+    sigma = 1.0 / width_scale
+    weight_map = torch.exp(-0.5 * (dist / sigma)**2)
+
+    concentration_score = (region.float() * weight_map).sum() / object_pixels
+
+    # ===== 2. 计算面积比例得分（高斯钟形曲线） =====
+    current_ratio = object_pixels / total_pixels
+
+    ideal_center = (ideal_ratio_low + ideal_ratio_high) / 2.0  # 0.1875
+    ideal_half_width = (ideal_ratio_high - ideal_ratio_low) / 2.0  # 0.0625
+
+    # 使用高斯函数：峰值在 ideal_center，标准差设为 ideal_half_width
+    ratio_score = torch.exp(-0.5 * ((current_ratio - ideal_center) / ideal_half_width)**2)
+
+    # ===== 3. 综合得分 =====
+    final_score = concentration_score * ratio_score
+
+    return final_score
+
+
 def finalize_target(target_l, view=False):
     """
     最合适的尺度选择
@@ -51,9 +109,11 @@ def finalize_target(target_l, view=False):
         target = _target['target']
         # y1, x1, y2, x2 = _target['coor']
         target_closed_score = object_closed_score_v2(target, 4)
+        # target_closed_score = score_local_region(target, ideal_ratio_high=0.125, ideal_ratio_low=0.03125, width_scale=0.5)
         scores.append(target_closed_score)
         # output_[y1:y2, x1:x2] = output_[y1:y2, x1:x2] + target * target_closed_score
     # output_ = (output_ - output_.min())/(output_.max() - output_.min())
+    # print(scores)
     idx = np.argmax(scores)
     return target_l[idx]['target'], scores, target_l[idx]['coor']
 

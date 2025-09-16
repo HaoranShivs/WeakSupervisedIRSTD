@@ -124,13 +124,13 @@ class Augment_transform:
                 transformed_image = transformed_image
                 transformed_mask = transformed_mask
         elif self.mode == "test":
-            transformed_image = F.resize(img, self.base_size, antialias=True)
-            transformed_mask = F.resize(mask, self.base_size, interpolation=transforms.InterpolationMode.BILINEAR, antialias=True)
+            transformed_image = F.resize(img, [self.base_size, self.base_size], antialias=True)
+            transformed_mask = F.resize(mask, [self.base_size, self.base_size], interpolation=transforms.InterpolationMode.BILINEAR, antialias=True)
         else:
             raise ValueError("mode should be train or test") 
 
         return transformed_image, transformed_mask
-    
+
 
 # def mix_target(img, mask):
 #     """

@@ -1264,7 +1264,7 @@ def compute_weighted_mean_variance(logits: torch.Tensor, mask: torch.Tensor, top
 
     return mean_wo, var_wo, mean_w, var_w
 
-def keep_negative_by_top3_magnitude_levels(x, target_size):
+def keep_negative_by_top2_magnitude_levels_old(x, target_size):
     """
     在 tensor 中，对负数部分：
     - 计算每个负数的十进制数量级（floor(log10(|x|))）
@@ -1320,6 +1320,74 @@ def keep_negative_by_top3_magnitude_levels(x, target_size):
     final_keep_mask = torch.zeros_like(x, dtype=torch.bool)
     final_keep_mask[keep_in_negative[:, 0], keep_in_negative[:,1]] = True
     final_keep_mask |= (x > 0)  # 加上正数
+
+    return out * final_keep_mask
+
+def keep_negative_by_top2_magnitude_levels(x, target_size):
+    """
+    在 tensor 中，对负数部分：
+    - 计算每个负数的十进制数量级（floor(log10(|x|))）
+    - 计算鲁棒最大值 robust_max（基于 target_size 的鲁棒截断或90%分位）
+    - 取 robust_max 对应的数量级 level_max = floor(log10(robust_max))
+    - 保留属于 level_max 和 level_max - 1 的负数，其余负数置为 0
+    - 非负数保持不变
+
+    Args:
+        x (torch.Tensor): 输入 tensor
+        target_size (int): 用于计算鲁棒最大值的参考尺寸（如总元素数）
+
+    Returns:
+        torch.Tensor: 处理后的 tensor
+    """
+    out = x.clone()
+
+    # 找出负数
+    negative_mask = x < 0
+    if not negative_mask.any():
+        return out  # 没有负数，直接返回
+
+    negative_vals = x[negative_mask]
+    abs_vals = negative_vals.abs()
+
+    # --- 计算鲁棒最大值 ---
+    if negative_mask.float().sum() / target_size > 2:
+        robust_max_idx = int(np.ceil(target_size * (1 - 0.8)))
+        sorted_abs_vals = torch.sort(abs_vals.view(-1), descending=True).values
+        robust_max = sorted_abs_vals[robust_max_idx] if robust_max_idx < len(sorted_abs_vals) else sorted_abs_vals[-1]
+    else:
+        robust_max = torch.quantile(abs_vals, 0.90)
+
+    # 安全截断：避免异常大值影响数量级计算
+    abs_vals = torch.clamp_max(abs_vals, max=robust_max)
+
+    # --- 计算鲁棒最大值对应的数量级 ---
+    # 注意：robust_max 可能为0？但负数绝对值>0，所以安全
+    level_max = torch.floor(torch.log10(robust_max)).to(torch.int).item()
+
+    # 定义要保留的数量级：level_max 和 level_max - 1
+    keep_levels = {level_max, level_max - 1}
+
+    # --- 计算每个负数的数量级 ---
+    magnitudes = torch.floor(torch.log10(abs_vals)).to(torch.int)
+
+    # --- 找出哪些负数属于 keep_levels ---
+    keep_negative = torch.isin(magnitudes, torch.tensor(list(keep_levels), dtype=magnitudes.dtype))
+
+    # --- 映射回原 tensor 的索引 ---
+    negative_indices = torch.nonzero(negative_mask, as_tuple=False).squeeze(1)
+    keep_in_negative = negative_indices[keep_negative]
+
+    # --- 构建最终保留 mask ---
+    final_keep_mask = torch.zeros_like(x, dtype=torch.bool)
+
+    # 如果 keep_in_negative 是一维的（单通道），需要处理维度
+    if keep_in_negative.dim() == 1:
+        final_keep_mask[keep_in_negative] = True
+    else:
+        final_keep_mask[keep_in_negative[:, 0], keep_in_negative[:, 1]] = True
+
+    # 加上非负数（>0 的部分）
+    final_keep_mask |= (x >= 0)  # 注意：这里应该是 >=0，因为0也保留（原逻辑是>0，但0不是负数，也应该保留）
 
     return out * final_keep_mask
 
@@ -1519,11 +1587,11 @@ def big_num_mask(x, num, largest=True):
     if largest:
         # vals = vals.min() / 2.5
         # vals = 0 if vals < 0 else vals
-        result = x > vals.min()
+        result = x >= vals.min()
     else:
         # vals = vals.max() / 2.5
         # vals = 0 if vals > 0 else vals
-        result = x < vals.max()
+        result = x <= vals.max()
     
     return result 
 
@@ -1723,4 +1791,53 @@ def bilateral_smooth_logits(logits, image, sigma_spatial=5.0, sigma_value=0.1):
     smoothed_logits = smoothed_logits_flat.view(H, W)
 
     return smoothed_logits
+
+def check_cube(mask: torch.Tensor):
+    """
+    在二值 mask 中查找是否存在孤立的 3x3 全 1 矩形区域。
+    “孤立”定义：该 3x3 区域周围一圈（外扩1像素）必须全为 0（或越界）。
+    
+    参数:
+        mask (torch.Tensor): 形状为 [H, W] 的二值张量（值为 0 或 1）
+    
+    返回:
+        torch.Tensor: 如果找到，返回该 3x3 区域；
+                     如果未找到，返回 None
+    """
+    assert mask.ndim == 2, "mask must be 2D tensor [H, W]"
+    H, W = mask.shape
+
+    if H < 3 or W < 3:
+        return None
+
+    # Step 1: 找出所有 3x3 全1区域（卷积值=9）
+    kernel_3x3 = torch.ones((1, 1, 3, 3), dtype=torch.float32, device=mask.device)
+    mask_f = mask.unsqueeze(0).unsqueeze(0).float()  # [1, 1, H, W]
+    conv_3x3 = F.conv2d(mask_f, kernel_3x3, stride=1, padding=1)  # [1, 1, H, W]
+    candidates = (conv_3x3.squeeze() == 9.0)  # [H, W]
+
+    if not candidates.any():
+        return None
+
+    # Step 2: 构造 5x5 外圈检测核（只检测外圈，中心3x3为0）
+    # 创建 5x5 核：外圈为1，内3x3为0
+    kernel_5x5_outer = torch.ones((1, 1, 5, 5), dtype=torch.float32, device=mask.device)
+    kernel_5x5_outer[0, 0, 1:4, 1:4] = 0  # 中心3x3置0
+
+    # 对原图做 5x5 卷积（检测每个 5x5 区域外圈是否有1）
+    conv_5x5_outer = F.conv2d(mask_f, kernel_5x5_outer, stride=1, padding=2)  # [1, 1, H, W]
+    outer1_sum = conv_5x5_outer.squeeze()  # [H-4, W-4]
+
+    # Step 3: 构造 7x7 外圈检测核（只检测外圈，中心5x5为0）
+    # 创建 7x7 核：外圈为1，内5x5为0
+    kernel_7x7_outer = torch.ones((1, 1, 7, 7), dtype=torch.float32, device=mask.device)
+    kernel_7x7_outer[0, 0, 1:6, 1:6] = 0  # 中心5x5置0
+
+    # 对原图做 7x7 卷积（检测每个 7x7 区域外圈是否有1）
+    conv_7x7_outer = F.conv2d(mask_f, kernel_7x7_outer, stride=1, padding=3)  # [1, 1, H, W]
+    outer2_sum = conv_7x7_outer.squeeze()  # [H-4, W-4]
+
+    isolated = candidates & (outer1_sum <= 12) & (outer2_sum <= 1)
+
+    return isolated
 

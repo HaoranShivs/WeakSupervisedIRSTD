@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from utils.sum_val_filter import min_pool2d
 from utils.utils import compute_mask_pixel_distances_with_coords, extract_local_windows, min_positive_per_local_area, \
     compute_local_extremes, compute_weighted_mean_variance, random_select_from_prob_mask, select_complementary_pixels, \
-    get_connected_mask_long_side, keep_negative_by_top3_magnitude_levels, add_uniform_points_cuda, big_num_mask, add_uniform_points_v2, \
+    get_connected_mask_long_side, keep_negative_by_top2_magnitude_levels, add_uniform_points_cuda, big_num_mask, add_uniform_points_v2, \
     add_uniform_points_v3, get_min_value_outermost_mask, periodic_function, smooth_optim, bilateral_smooth_logits
 from utils.adaptive_filter import filter_mask_by_points
 from utils.refine import dilate_mask, erode_mask
@@ -91,7 +91,7 @@ def initial_target(grad_intensity: torch.Tensor, pt_label: torch.Tensor, thresho
                 # plt.imshow((fg_v/(fg_vwo+1e-8)-1), cmap='gray')
             else:
                 result_ = torch.where(fg_area > 0.1, -GI, GI)
-            result_ = keep_negative_by_top3_magnitude_levels(result_, target_size=fg_area.sum())
+            result_ = keep_negative_by_top2_magnitude_levels(result_, target_size=fg_area.sum())
             result = torch.where(result_ < 0., torch.ones_like(GI), torch.zeros_like(GI)).bool()
             # result = filter_mask_by_points(result, pt_label, kernel_size=5).bool()
 
@@ -141,7 +141,7 @@ def initial_target(grad_intensity: torch.Tensor, pt_label: torch.Tensor, thresho
             local_min_num = 9 if min_num * bg_ratio < 9 else min_num * bg_ratio
             _, bg_vwo, _, bg_v = compute_weighted_mean_variance(GI, bg_mask > 0.1, int(local_min_num))
             result_total += fg_v/(fg_vwo+1e-8) -bg_v/(bg_vwo+1e-8)   #(H,W)
-        result_total = keep_negative_by_top3_magnitude_levels(result_total, target_size=fg_area.sum())
+        result_total = keep_negative_by_top2_magnitude_levels(result_total, target_size=fg_area.sum())
         result = torch.where(result_total < 0., torch.ones_like(GI), torch.zeros_like(GI)).bool()
 
         # fig = plt.figure(figsize=(25, 5))
@@ -162,13 +162,14 @@ def initial_target(grad_intensity: torch.Tensor, pt_label: torch.Tensor, thresho
         # print(f"iter2 Converged at{iter2}, Diff: {diff}")
         fg_area_new = result
         bg_area_new = ~result
-        diff = torch.norm(bg_area_new.float() - bg_area.float())
-        if diff < (H * W / 64) ** 0.5:
+        diff = torch.norm(fg_area_new.float() - fg_area.float())
+        break_thre = (fg_area > 0.1).float().sum() / 16
+        if diff < break_thre:
             converge_time += 1
         else:
             converge_time = 0
             # print(f"iter1 Converged at{iter1}, Diff: {diff}")
-        if converge_time > 2:
+        if converge_time > 3:
             break
         #     print(f"iter1 {iter1}, Diff: {diff}")
         if result.float().sum() < 4:
@@ -183,7 +184,7 @@ def initial_target(grad_intensity: torch.Tensor, pt_label: torch.Tensor, thresho
 
     return result
     
-def evolve_target(grad_intensity, target_mask, image, restrain_mask, pt_label):
+def evolve_target(grad_intensity, target_mask, image, pt_label, alpha, beta):
     """
     Args:
         grad_intensity: 梯度强度 [H, W]
@@ -199,10 +200,13 @@ def evolve_target(grad_intensity, target_mask, image, restrain_mask, pt_label):
         return result
     GI = grad_intensity
     image = (image - image.min())/(image.max() - image.min() + 1e-8)
+    # 噪声水平测量
+    # noise_level_ = grad_intensity[target_mask.bool()].min()
+    noise_level_ = 0.5 * (alpha * 0.1 + (1-alpha)*(1-beta)) / (1-(1-alpha)*beta + 1e-8)
+    noise_level = torch.clamp(torch.tensor(noise_level_), min=0.05, max=0.2)
     # 找局部最高值，再梯度强度➗局部最大值，进行局部归一化
     local_max = F.max_pool2d(GI.unsqueeze(0).unsqueeze(0), (5,5), stride=1, padding=2)
     local_norm_image = grad_intensity / (local_max + 1e-11)
-
     # 局部最大值
     local_max2 = F.max_pool2d(local_norm_image, (3,3), stride=1, padding=1)
     summit_mask = (local_norm_image == local_max2)
@@ -210,9 +214,7 @@ def evolve_target(grad_intensity, target_mask, image, restrain_mask, pt_label):
     local_norm_image = local_norm_image.squeeze(0).squeeze(0)
 
     fg_area = target_mask.float()
-    # bg_area = (1-dilate_mask(target_mask.float(), 1)).float()
     bg_area = (1-target_mask.float()).float()
-    noise_ratio = 0.05
     converge_time = 0
     for iter1 in range(50):
         fg_mask = fg_area * summit_mask
@@ -224,7 +226,7 @@ def evolve_target(grad_intensity, target_mask, image, restrain_mask, pt_label):
         # result_num_ratio = fg_area.sum() / (fg_area.sum() + bg_area.sum())
         for iter2 in range(100):
             noise = torch.rand(GI.shape)
-            GI = grad_intensity * (1-noise_ratio) + noise * noise_ratio
+            GI = grad_intensity * (1-noise_level) + noise * noise_level
             # fig = plt.figure(figsize=(35, 5))
             # plt.subplot(1, 7, 1)
             # plt.imshow(GI.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
@@ -261,27 +263,19 @@ def evolve_target(grad_intensity, target_mask, image, restrain_mask, pt_label):
                 # plt.imshow((fg_v/(fg_vwo+1e-8)-1), cmap='gray'), plt.title(f'max:{(fg_v/(fg_vwo+1e-8)-1).max()}')
             else:
                 result_ = torch.where(fg_area > 0.1, -GI, GI)
-            result_ = keep_negative_by_top3_magnitude_levels(result_, target_size=fg_area.sum())
+            result_ = keep_negative_by_top2_magnitude_levels(result_, target_size=fg_area.sum())
             result = torch.where(result_ < 0., torch.ones_like(GI), torch.zeros_like(GI)).bool()
             result = filter_mask_by_points(result, target_mask, kernel_size=1).bool()
 
-            # plt.subplot(1, 7, 6)
-            # plt.imshow(result, cmap='gray', vmax=1.0, vmin=0.)
-            # plt.subplot(1, 7, 7)
-            # plt.imshow(result_, cmap='gray')
-            # plt.show(block=False)
-            # a = input()
+            # result_pos = (result_ > 0)*result_
+            # result_pos = result_ / (result_pos.max() + 1e-8)
 
-            # result__ = result_ * ~((fg_mask>0.1) | (bg_mask>0.1))
-
-            # result_pos = (result__ > 0)*result__
-            # result_pos = result__ / (result_.max() + 1e-8)
-
-            # result_neg = (result__ < 0) * (-result__)
+            # result_neg = (result_ < 0) * (-result_)
             # result_neg = result_neg / (result_neg.max() + 1e-8)
-            # order = torch.max(result_pos, result_neg)
-
-            # seedlize_candi = big_num_mask(order, int(H*W*0.1))
+            # order = torch.max(result_pos * ~(bg_mask>0.1), result_neg * ~(fg_mask>0.1))
+            
+            # new_seed_num = int(max(2, H*W*0.1))
+            # seedlize_candi = big_num_mask(order, new_seed_num)
 
             # print(order)
             # print(seedlize_candi)
@@ -295,17 +289,26 @@ def evolve_target(grad_intensity, target_mask, image, restrain_mask, pt_label):
 
             fg_seed_num = int(0.1*max_num)
             # fg_seed_num = (seedlize_candi * (fg_area > 0.1)).sum()
+            # print('fg_seed_num', fg_seed_num)
             fg_seed_num = fg_seed_num if fg_seed_num > 2 else 2
             fg_mask_new = add_uniform_points_v3(GI, (fg_area > 0.1) * (result_ < 0.), fg_mask>0.1, int(fg_seed_num), mode='fg')
             fg_mask_new = fg_mask_new.bool() * result
 
             bg_seed_num = int(0.1*min_num)
             # bg_seed_num = (seedlize_candi * (bg_area > 0.1)).sum()
+            # print('bg_seed_num', bg_seed_num)
             bg_seed_num = bg_seed_num if bg_seed_num > 2 * bg_area.sum()/fg_area.sum() else 2 * bg_area.sum()/fg_area.sum()
             bg_mask_new = add_uniform_points_v3(GI, (bg_area > 0.1) * (result_ > 0.), bg_mask>0.1, int(bg_seed_num), mode='bg')
             bg_mask_new = bg_mask_new.bool() * ~result
 
-            diff = torch.norm(bg_mask_new.float() - (bg_mask>0.1).float())
+            # plt.subplot(1, 7, 6)
+            # plt.imshow(fg_mask_new, cmap='gray', vmax=1.0, vmin=0.)
+            # plt.subplot(1, 7, 7)
+            # plt.imshow(bg_mask_new, cmap='gray')
+            # plt.show(block=False)
+            # a = input()
+
+            diff = torch.norm(fg_mask_new.float() - (fg_mask>0.1).float())
             if diff < 1 :
                 # print(f"iter1 {iter1} iter2 Converged at {iter2}, Diff: {diff}")
                 break
@@ -323,7 +326,7 @@ def evolve_target(grad_intensity, target_mask, image, restrain_mask, pt_label):
         fg_ratio, bg_ratio = 0.4, 0.4
         for i in range(10):
             noise = torch.rand(GI.shape)
-            GI = grad_intensity * (1-noise_ratio) + noise * noise_ratio
+            GI = grad_intensity * (1-noise_level) + noise * noise_level
 
             local_max_num = 9 if max_num * fg_ratio < 9 else max_num * fg_ratio
             _, fg_vwo, _, fg_v = compute_weighted_mean_variance(GI, fg_mask > 0.1, int(local_max_num))
@@ -335,28 +338,28 @@ def evolve_target(grad_intensity, target_mask, image, restrain_mask, pt_label):
             fg_ratio -= 0.02
             bg_ratio -= 0.02
         
-        result_total = keep_negative_by_top3_magnitude_levels(result_total, target_size=fg_area.sum())
+        result_total = keep_negative_by_top2_magnitude_levels(result_total, target_size=fg_area.sum())
         result = torch.where(result_total < 0., torch.ones_like(GI), torch.zeros_like(GI)).bool()
         result = filter_mask_by_points(result, target_mask, kernel_size=1).bool()
 
-        # fig = plt.figure(figsize=(25, 5))
-        # plt.subplot(1, 5, 1)
-        # plt.imshow(GI.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
-        # plt.subplot(1, 5, 2)
-        # plt.imshow(result_total, cmap='gray')
-        # plt.subplot(1, 5, 3)
-        # plt.imshow(result_total, cmap='gray')
-        # plt.show(block=False)
-        # plt.subplot(1, 5, 4)
-        # plt.imshow(fg_mask.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
-        # plt.subplot(1, 5, 5)
-        # plt.imshow(bg_mask.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
-        # a = input()
+        fig = plt.figure(figsize=(25, 5))
+        plt.subplot(1, 5, 1)
+        plt.imshow(GI.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
+        plt.subplot(1, 5, 2)
+        plt.imshow(result_total, cmap='gray')
+        plt.subplot(1, 5, 3)
+        plt.imshow(result_total, cmap='gray')
+        plt.show(block=False)
+        plt.subplot(1, 5, 4)
+        plt.imshow(fg_mask.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
+        plt.subplot(1, 5, 5)
+        plt.imshow(bg_mask.view(H, W), cmap='gray', vmax=1.0, vmin=0.0)
+        a = input()
 
         fg_area_new = result
         bg_area_new = ~result
         # bg_area_new = filter_mask_by_points(~result, lowest_mask, kernel_size=1).bool()
-        diff = torch.norm(bg_area_new.float() - bg_area.float())
+        diff = torch.norm(fg_area_new.float() - fg_area.float())
         if diff < (H * W / 64) ** 0.5:
             # print(f"iter1 Converged at{iter1}, Diff: {diff}")
             converge_time += 1
@@ -370,9 +373,9 @@ def evolve_target(grad_intensity, target_mask, image, restrain_mask, pt_label):
         if fg_area_new.sum() > (grad_intensity > 0.1).float().sum() * 2 and (H + W) > 96:
             break
         if result.float().sum() < 4:
-            noise_ratio = noise_ratio * 0.5
+            noise_level = noise_level * 0.5
             continue
-        noise_ratio = noise_ratio * 0.95
+        noise_level = noise_level * 0.95
         decay_rate = 0.5
         fg_area, bg_area = fg_area_new.float() + fg_area*decay_rate, bg_area_new.float()+ bg_area*decay_rate
         # fg_area, bg_area = (fg_area_new.float()/decay_rate + fg_area)*decay_rate, (bg_area_new.float()/decay_rate + bg_area)*decay_rate

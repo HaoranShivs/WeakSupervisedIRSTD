@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 import matplotlib.pyplot as plt
 
-from utils.loss import SoftLoULoss
+from utils.loss import SoftLoULoss, SoftLoULoss_Epochs
 from net.decoder import GradPred
 
 
@@ -187,23 +187,32 @@ class DNANet(nn.Module):
             return [output1, output2, output3, output4], []
         else:
             output = F.sigmoid(self.final(Final_x0_4))
-            return output
+            return [output]
         
 class DNANet_withloss(nn.Module):
-    def __init__(self, num_classes, input_channels, block, num_blocks, nb_filter,deep_supervision=False, grad_loss=False):
+    def __init__(self, grad_loss=False, epoch_ratio=0.75):
         super(DNANet_withloss, self).__init__()
+
+        num_classes = 1
+        input_channels=3
+        block=Res_CBAM_block
+        num_blocks=[2, 2, 2, 2]
+        nb_filter=[16, 32, 64, 128, 256]
+        deep_supervision=True
+
         get_feature = True if grad_loss else False
         self.net = DNANet(num_classes, input_channels, block, num_blocks, nb_filter,deep_supervision, get_feature=get_feature)
         self.grad_pred = GradPred(nb_filter) if get_feature else None
-        self.softiou_loss_fn = SoftLoULoss()
+        self.softiou_loss_fn = SoftLoULoss_Epochs(epoch_ratio)
         self.mse_loss_fn = nn.MSELoss()
 
-    def forward(self, img, label, logit_label=None):
+    def forward(self, img, label, curr_epoch_ratio, logit_label=None):
+        img = img.repeat(1, 3, 1, 1)  # for DNANet
         res, feature = self.net(img)
         # softiou_loss
         loss = 0
         for pred in res:
-            loss += self.softiou_loss_fn(pred, label)
+            loss += self.softiou_loss_fn(pred, label, curr_epoch_ratio)
         loss /= len(res)
         # grad_loss
         if self.grad_pred is not None:
@@ -227,4 +236,4 @@ class DNANet_withloss(nn.Module):
         # plt.tight_layout()
         # plt.show()
         # a = input()
-        return res, grad_res
+        return pred, loss

@@ -18,7 +18,7 @@ from scipy import ndimage
 # from models import get_model
 from dataprocess.sirst import NUDTDataset, IRSTD1kDataset
 from net.attentionnet import attenMultiplyUNet_withloss
-from net.dnanet import DNANet_withloss, Res_CBAM_block
+from net.DANnet import DNANet_withloss, Res_CBAM_block
 from pseudo_label_generate import img_gradient2, img_gradient3, img_gradient5, local_max_gradient, \
     gradient_expand_one_step, gradient_expand__one_step_boundary, boundary4gradient_expand, compute_histogram, \
         smooth_histogram, compute_histogram_slope, robust_min_max, apply_crf, object_closed_score, sigmoid_mapping3, \

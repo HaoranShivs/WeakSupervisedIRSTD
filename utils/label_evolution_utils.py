@@ -4,7 +4,7 @@ import numpy as np
 
 from utils.utils import iou_score, gaussian_blurring_2D, gaussian_kernel
 
-def proper_region(pred, c1, c2):
+def proper_region(pred, c1, c2, extend_factor=0.5):
     """
     由训练过的模型的预测和点标签的坐标，得到一个合适的区域。
     参数:
@@ -23,7 +23,6 @@ def proper_region(pred, c1, c2):
     s2 = c2
     e2 = c2 + initial_size
     mini_size = 6
-    extend_factor = 0.5
     # 合适上边界
     for i in range(mini_size//2, half_size):
         s1 = c1 + half_size - i
@@ -57,7 +56,7 @@ def proper_region(pred, c1, c2):
     e2_ = e2_ if e2_ < pred.shape[1] - 2 else pred.shape[1] - 2
     # print(c1, c2, s1, e1, s2, e2, s1_, e1_, s2_, e2_)
     
-    return (int(s1_), int(e1_), int(s2_), int(e2_)), (int(s1), int(e1), int(s2), int(e2))
+    return (int(s1_), int(e1_), int(s2_), int(e2_))
 
 def examine_iou(final_target, pesudo_label, image, iou_treshold=0.5):
     """
@@ -74,6 +73,10 @@ def examine_iou(final_target, pesudo_label, image, iou_treshold=0.5):
             return pesudo_label
         else:
             return final_target
+    elif final_target.float().sum() >= 4:
+        return final_target
+    elif pesudo_label.float().sum() >= 4: 
+        return pesudo_label
     else :
         return torch.zeros_like(pesudo_label)
     

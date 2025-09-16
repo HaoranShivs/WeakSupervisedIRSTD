@@ -23,7 +23,7 @@ from utils.loss import SoftLoULoss
 from utils.lr_scheduler import *
 from utils.evaluation import SegmentationMetricTPFNFP, my_PD_FA
 from utils.logger import setup_logger
-from net.dnanet import DNANet_withloss, Res_CBAM_block
+from net.DANnet import DNANet_withloss, Res_CBAM_block
 
 
 

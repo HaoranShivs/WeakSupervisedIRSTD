@@ -23,7 +23,8 @@ from utils.loss import SoftLoULoss, ImageRecoverLoss, Heatmap_SoftIoU, Heatmap_M
 from utils.lr_scheduler import *
 from utils.evaluation import SegmentationMetricTPFNFP, my_PD_FA
 from utils.logger import setup_logger
-from net.dnanet import DNANet_withloss, Res_CBAM_block
+from net.DANnet import DNANet_withloss
+from net.ACMnet import ASKCResUNet_withloss
 
 
 def parse_args():
@@ -54,7 +55,7 @@ def parse_args():
     #
     # Net parameters
     #
-    parser.add_argument("--net-name", type=str, default="rpcanet", help="net name: fcn")
+    parser.add_argument("--net-name", type=str, default="dnanet", help="net name: fcn")
     parser.add_argument("--model-path", type=str, default="", help="load model path")
     parser.add_argument("--model-path1", type=str, default="", help="load model path")
     parser.add_argument("--model-path2", type=str, default="", help="load model path")
@@ -150,16 +151,17 @@ class Trainer(object):
         self.device = torch.device("cuda:{}".format(args.gpu) if torch.cuda.is_available() else "cpu")
 
         # model
+        if args.net_name == "dnanet":
+            self.net = DNANet_withloss(False, 0.75)
+        elif args.net_name == "acmnet":
+            self.net = ASKCResUNet_withloss(0.75)
+        elif args.net_name == "agpcnet":
+            self.net = TwoTaskNetWithLoss()
+        
+
         # net = BaseNet4(1, self.cfg)
         # loss_fn = SoftLoULoss()
         # self.net = attenMultiplyUNet_withloss(self.cfg, False)
-        self.net = DNANet_withloss(1, 
-                    input_channels=3, 
-                    block=Res_CBAM_block,
-                    num_blocks=[2, 2, 2, 2],
-                    nb_filter=[16, 32, 64, 128, 256],
-                    deep_supervision=True,
-                    grad_loss=True)
 
         # self.net.apply(self.weight_init)
         self.net = self.net.to(self.device)
@@ -209,13 +211,12 @@ class Trainer(object):
         for epoch in range(args.epochs):
             for i, (data, label) in enumerate(self.train_data_loader):
                 data = data.to(self.device)
-                data = data.repeat(1, 3, 1, 1)  # for DNANet
                 label = label.to(self.device)
                 label_b = (label > self.cfg["label_vague_threshold"]).type(torch.float32)
 
                 # with torch.no_grad():
                 # _, softIoU_loss, class_loss, detail_loss, loss_128 = self.net(data, label)
-                pred, softIoU_loss = self.net(data, label_b, label)
+                pred, softIoU_loss = self.net(data, label_b, epoch/args.epochs, label)
                 # total_loss = softIoU_loss + class_loss + detail_loss + loss_128
                 total_loss = softIoU_loss
                 detail_loss = torch.tensor([0.], device=total_loss.device)

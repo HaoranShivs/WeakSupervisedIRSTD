@@ -24,7 +24,7 @@ from utils.lr_scheduler import *
 from utils.evaluation import SegmentationMetricTPFNFP, my_PD_FA
 from utils.logger import setup_logger
 from utils.utils import split_indices_by_mod
-from net.dnanet import DNANet_withloss, Res_CBAM_block
+from net.DANnet import DNANet_withloss, Res_CBAM_block
 
 
 def parse_args():
@@ -223,6 +223,7 @@ class Trainer(object):
                 label_b = (label > self.cfg["label_vague_threshold"]).type(torch.float32)
 
                 # _, softiouloss, class_loss, detail_loss, loss_128, _ = self.net(data, label)
+                print(label.shape)
                 pred, softiouloss = self.net(data, label_b, label)
                 # total_loss = softiouloss + class_loss + detail_loss + loss_128
                 total_loss = softiouloss
