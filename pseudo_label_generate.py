@@ -2,8 +2,8 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 import torch.utils.data as Data
-import numpy as np
 
+import numpy as np
 from scipy import ndimage
 from scipy.ndimage import label as ndlabel
 from scipy.signal import find_peaks as fpk
@@ -85,18 +85,18 @@ def gradient_expand_one_size(region, scale_weight=[0.5, 0.5, 0.5], dilated_mask=
     img_gradient_3 = img_gradient5(region_)  # 5*5 sobel
 
     # # 梯度映射，突出中灰度的区分度
-    min_value1, max_value1 = robust_min_max(img_gradient_1, 0.001, 0.01)
-    min_value2, max_value2 = robust_min_max(img_gradient_2, 0.001, 0.01)
-    min_value3, max_value3 = robust_min_max(img_gradient_3, 0.001, 0.01)
+    min_value1, max_value1 = robust_min_max(img_gradient_1, 0.01, 0.05)
+    min_value2, max_value2 = robust_min_max(img_gradient_2, 0.01, 0.05)
+    min_value3, max_value3 = robust_min_max(img_gradient_3, 0.01, 0.05)
     img_gradient_1, img_gradient_2, img_gradient_3 = (img_gradient_1 - min_value1) / (max_value1 - min_value1), \
         (img_gradient_2 - min_value2) / (max_value2 - min_value2), (img_gradient_3 - min_value3) / (max_value3 - min_value3)
     
-    img_gradient_1, img_gradient_2, img_gradient_3 = sigmoid_mapping2(img_gradient_1, 10, scale_weight[0]), \
-        sigmoid_mapping2(img_gradient_2, 10, scale_weight[1]), sigmoid_mapping2(img_gradient_3, 10, scale_weight[2])
+    img_gradient_1, img_gradient_2, img_gradient_3 = sigmoid_mapping2(img_gradient_1, 10, 1), \
+        sigmoid_mapping2(img_gradient_2, 10, 1), sigmoid_mapping2(img_gradient_3, 10, 1)
     
     # 多尺度融合
-    img_gradient_ = grad_multi_scale_fusion(img_gradient_1, scale_weight[0]) * grad_multi_scale_fusion(img_gradient_2, scale_weight[0]) * \
-        grad_multi_scale_fusion(img_gradient_3, scale_weight[0])
+    img_gradient_ = grad_multi_scale_fusion(img_gradient_1, scale_weight[0]) * grad_multi_scale_fusion(img_gradient_2, scale_weight[1]) * \
+        grad_multi_scale_fusion(img_gradient_3, scale_weight[2])
     img_gradient_ = (img_gradient_ - img_gradient_.min())/(img_gradient_.max() - img_gradient_.min() + 1e-11)
 
     # 使用target_mask来增强对应区域的梯度
@@ -123,7 +123,6 @@ def gradient_expand_one_size(region, scale_weight=[0.5, 0.5, 0.5], dilated_mask=
         expanded_grad_ = torch.where(expanded_grad > expanded_grad_, expanded_grad, expanded_grad_) * (expanded_grad_ > -1e-4)
         expanded_grad = expanded_grad_
     
-
     _target = torch.mean(expanded_grad[0], dim=0)
     _target = (_target - _target.min())/(_target.max() - _target.min())
 
@@ -682,12 +681,12 @@ def gradient_expand_filter_v2(img, pt_label, region_size, view=False):
         if cube_center is not None and cube_center.float().sum() >0:
             target_refined = dilate_mask(cube_center, 1)
         output[b,0, coors[0]:coors[2], coors[1]:coors[3]] = torch.max(output[b,0, coors[0]:coors[2], coors[1]:coors[3]], target_refined)
-        # 显示结果
-        plt.figure(figsize=(18, 6))
-        plt.subplot(131), plt.imshow(_region[0,0], cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(132), plt.imshow(final_target, cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(133), plt.imshow(target_refined, cmap='gray', vmax=1., vmin=0.)
-        plt.show()
+        # # 显示结果
+        # plt.figure(figsize=(18, 6))
+        # plt.subplot(131), plt.imshow(_region[0,0], cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(132), plt.imshow(final_target, cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(133), plt.imshow(target_refined, cmap='gray', vmax=1., vmin=0.)
+        # plt.show()
         # if view:
         #     # 绘制直方图
         #     fig = plt.figure(figsize=(15, 5))
@@ -807,23 +806,25 @@ def label_evolution_v2(image, pt_label, pesudo_label, pred, preded_label=None, v
 
 
 def label_evolution(image, pt_label, pesudo_label, pred, preded_label=None, view=False):
-    # 截出点标签的区域
+    # 点标签坐标
     indices = torch.where(pt_label > 1e-4)
     output = torch.zeros_like(image, dtype=torch.float32)
-    alpha, beta = 0.8, 0.8
+    alpha, beta = 0.9, 0.9
+    pred_pick_thre = 0.01
+    new_pseudo_pick_thre = 0.01
 
     for b, _, c1, c2 in zip(*indices):
         if pred[b, 0, c1, c2] > 0.5:
-            coors = proper_region(pred[b, 0], c1, c2)
-            d1, d2 = 2, 2
+            coors = proper_region(pred[b, 0], c1, c2, 1.0)
+            d1, d2 = 2, 3
         else:
-            coors = proper_region(pesudo_label[b, 0], c1, c2, 0.25)
+            coors = proper_region(pesudo_label[b, 0], c1, c2)
             d1, d2 = 3, 3
         region = image[b:b+1, :, coors[0]:coors[1], coors[2]:coors[3]]
         region_ = (region - region.min())/(region.max() - region.min())
 
         advice_region = examine_iou(pred[b, 0, coors[0]:coors[1], coors[2]:coors[3]], pesudo_label[b,0, coors[0]:coors[1], coors[2]:coors[3]], \
-                                    image[b, 0, coors[0]:coors[1], coors[2]:coors[3]],  iou_treshold=0.01)
+                                    image[b, 0, coors[0]:coors[1], coors[2]:coors[3]],  iou_treshold=pred_pick_thre)
         # 模型推理标签的累积结果
         advice2_condition = False
         preded_label_iou = 0.0
@@ -840,17 +841,20 @@ def label_evolution(image, pt_label, pesudo_label, pred, preded_label=None, view
             if advice2_condition:
                 d1, d2 = 1, 1
                 advice_region = preded_mask > 0.75
+            # 消除advice_region中部分游离的小像素块
+            advice_region = remove_small_components(advice_region.numpy(), min_size=4)
+
             advice_dilated_ = dilate_mask(advice_region, d1)
             advice_dilated = smooth_and_scale_mask(advice_dilated_, 0., 1., 2, kernel_size=d1*2+1)
             advice_eroded = erode_mask(advice_region, d2)
      
             target_, grad_expand_process_data = gradient_expand_one_size(region, [0.75, 0.5, 0.25], advice_dilated, advice_eroded, alpha, beta, view=view)
-            preded_mask = target_
+            preded_mask = target_   # for debug
             final_target_ = evolve_target(target_, advice_region, region[0,0], pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], alpha, beta)
             target_filtered_by_points = filter_mask_by_points(final_target_, advice_region, 1)
 
             # 审查，新的伪标签和上一轮伪标签的差距在一定范围内，若差距过大，则还是使用上一轮的伪标签
-            iou_treshold = 0.01 if not advice2_condition else 0.01
+            iou_treshold = new_pseudo_pick_thre if not advice2_condition else 0.01
             final_target = examine_iou(target_filtered_by_points, pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], region[0,0], iou_treshold=iou_treshold)
         if final_target.sum() < 4:
             final_target = dilate_mask(pt_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], 1)
@@ -859,14 +863,14 @@ def label_evolution(image, pt_label, pesudo_label, pred, preded_label=None, view
         #     final_target = dilate_mask(cube_center, 1)
         # 保存结果
         output[b,0, coors[0]:coors[1], coors[2]:coors[3]] = torch.max(output[b,0, coors[0]:coors[1], coors[2]:coors[3]], final_target)
-        # 显示结果
-        plt.figure(figsize=(30, 6))
-        plt.subplot(151), plt.imshow(region_[0,0], cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(152), plt.imshow(preded_mask, cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(153), plt.imshow(final_target, cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(154), plt.imshow(pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(155), plt.imshow(pred[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
-        plt.show()
+        # # 显示结果
+        # plt.figure(figsize=(30, 6))
+        # plt.subplot(151), plt.imshow(region_[0,0], cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(152), plt.imshow(preded_mask, cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(153), plt.imshow(final_target, cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(154), plt.imshow(pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(155), plt.imshow(pred[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
+        # plt.show()
         # if view:
         #     process_data_view(image[b], region[0,0], pred[b, 0], grad_expand_process_data, target, [100,], target_mapped, treshold_filter_process_data, final_target, output[b,0])
     return output
@@ -1041,7 +1045,7 @@ def main(args):
     
     using_preded_label = int(args.last_turnnum[0]) > 0
     using_pseudo_label = args.model_path != ''
-
+    
     # dataset
     if args.dataset == "nudt":
         trainset = NUDTDataset(base_dir=r"W:/DataSets/ISTD/NUDT-SIRST", mode="train", base_size=256, pt_label=True, \
@@ -1055,7 +1059,7 @@ def main(args):
         img_path =  "W:/DataSets/ISTD/MDvsFA/trainval/images" 
     elif args.dataset == "irstd1k":
         trainset = IRSTD1kDataset(base_dir=r"W:/DataSets/ISTD/IRSTD-1k", mode="train", base_size=512, pt_label=True, \
-                                  pesudo_label=using_pseudo_label, preded_label=using_preded_label, augment=False, \
+                                  pseudo_label=using_pseudo_label, preded_label=using_preded_label, augment=False, \
                                     turn_num=args.last_turnnum, file_name=file_name, cfg=cfg)
         img_path = "W:/DataSets/ISTD/IRSTD-1k/trainval/images"
     else:
@@ -1073,7 +1077,7 @@ def main(args):
             model = AGPCNet_withloss()
         else:
             raise NotImplementedError
-        
+    
         model.load_state_dict(torch.load(args.model_path + '/best.pkl'))
         model.eval()
         model = model.to(device)
@@ -1092,26 +1096,25 @@ def main(args):
     for j, (img, label) in enumerate(train_data_loader):
         pt_label, pesudo_label = label[:,0:1], label[:,1:2]
         preded_label = label[:,2:] if using_preded_label else None
-
-        if args.model_path != "":
-            # 预测
-            with torch.no_grad(): 
+        with torch.no_grad():
+            if args.model_path != "":
+                # 预测
                 image_ = img.to(device)
-                pred, _ = model(image_)
-            pred = pred.cpu()
-            pred = (pred > 0.5).float()
+                pred, _ = model(image_, pesudo_label.to(device))
+                pred = pred.cpu()
+                pred = (pred > 0.5).float()
 
-            num = int(args.last_turnnum[0])+1
-            preded_label_ = preded_label / 2 + pred / 2 if num > 1 else pred
-            preded_label = None if args.preded_label == 0 else preded_label_
+                num = int(args.last_turnnum[0])+1
+                preded_label_ = preded_label / 2 + pred / 2 if num > 1 else pred
+                preded_label = None if args.preded_label == 0 else preded_label_
+                
+                target_grad_expanded_filtered = label_evolution(img, pt_label, pesudo_label, pred, preded_label, view=(args.debug == 1))
+            else:
+                target_grad_expanded_filtered = gradient_expand_filter_v2(img, pt_label, [8,16,32,48,64], view=(args.debug == 1))
             
-            target_grad_expanded_filtered = label_evolution(img, pt_label, pesudo_label, pred, preded_label, view=(args.debug == 1))
-        else:
-            target_grad_expanded_filtered = gradient_expand_filter_v2(img, pt_label, [8,16,32,48,64], view=(args.debug == 1))
-        
-        save_pesudo_label(target_grad_expanded_filtered, save_path, names[j*32: j*32+img.shape[0]])
-        if args.model_path != "":
-            save_pesudo_label(preded_label_, preded_label_path, names[j*32: j*32+img.shape[0]])
+            save_pesudo_label(target_grad_expanded_filtered, save_path, names[j*32: j*32+img.shape[0]])
+            if args.model_path != "":
+                save_pesudo_label(preded_label_, preded_label_path, names[j*32: j*32+img.shape[0]])
         print(f"save batch: {j} pesudo label!")
 
     mask_path = img_path + '/../' + 'masks'

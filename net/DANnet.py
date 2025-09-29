@@ -206,7 +206,7 @@ class DNANet_withloss(nn.Module):
         self.softiou_loss_fn = SoftLoULoss_Epochs(epoch_ratio)
         self.mse_loss_fn = nn.MSELoss()
 
-    def forward(self, img, label, curr_epoch_ratio, logit_label=None):
+    def forward(self, img, label, curr_epoch_ratio=0, logit_label=None):
         img = img.repeat(1, 3, 1, 1)  # for DNANet
         res, feature = self.net(img)
         # softiou_loss

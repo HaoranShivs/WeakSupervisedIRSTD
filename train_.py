@@ -13,7 +13,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 # from models import get_model
-from data.sirst import NUDTDataset, IRSTD1kDataset, MDFADataset
+from data.sirst import NUDTDataset, IRSTD1kDataset
 # from dataprocess.croped_sirst import Crop_IRSTD1kDataset, Crop_NUDTDataset
 # from net.basenet import BaseNet1, BaseNet2, BaseNet3, BaseNet4, BaseNetWithLoss, LargeBaseNet, LargeBaseNet2, GaussNet, GaussNet2, GaussNet3, GaussNet4, SigmoidNet
 # from net.basenet import BaseNet4, BaseNetWithLoss
@@ -24,9 +24,7 @@ from utils.lr_scheduler import *
 from utils.evaluation import SegmentationMetricTPFNFP, my_PD_FA
 from utils.logger import setup_logger
 from utils.utils import split_indices_by_mod
-from net.DANnet import DNANet_withloss
-from net.ACMnet import ASKCResUNet_withloss
-from net.AGPCnet import AGPCNet_withloss
+from net.dnanet import DNANet_withloss, Res_CBAM_block
 
 
 def parse_args():
@@ -43,15 +41,13 @@ def parse_args():
     parser.add_argument("--dataset", type=str, default="nudt", help="choose datasets")
     parser.add_argument("--turn-num", type=str, default="0", help="choose pseudo label turn")
     parser.add_argument("--offset", type=int, default=0, help="offset of point label from center")
-    parser.add_argument("--target-mix", type=int, default=0, help="whether to mix targets")
-    parser.add_argument("--pseudo-label", type=int, default=1, help="whether to use pesudo label")
-    parser.add_argument("--valset", type=int, default=0, help="whether to use real testset")
-    parser.add_argument("--valset-mod", type=int, default=4, help="select valset from trainset by mod")
-    parser.add_argument("--valset-rmd", type=int, default=0, help="select valset from trainset by mod")
+    parser.add_argument("--target-mix", type=bool, default=False, help="whether to mix targets")
+    parser.add_argument("--pesudo-label", type=bool, default=True, help="whether to use pesudo label")
 
     #
     # Training parameters
     #
+
     parser.add_argument("--batch-size", type=int, default=16, help="batch size for training")
     parser.add_argument("--epochs", type=int, default=50, help="number of epochs")
     parser.add_argument("--warm-up-epochs", type=int, default=0, help="warm up epochs")
@@ -59,6 +55,7 @@ def parse_args():
     parser.add_argument("--gpu", type=str, default="0", help="GPU number")
     parser.add_argument("--seed", type=int, default=1, help="seed")
     parser.add_argument("--lr-scheduler", type=str, default="poly", help="learning rate scheduler")
+    parser.add_argument("--valset", type=int, default=0, help="split trainset into trainset and valset")
 
     #
     # Net parameters
@@ -83,7 +80,7 @@ def parse_args():
     # Save folders
     # args.base_dir = r'D:\WFY\dun_irstd\result'
     args.time_name = time.strftime("%Y%m%dT%H-%M-%S", time.localtime(time.time()))
-    args.folder_name = "{}_{}_{}_{}".format(args.time_name, args.net_name, args.dataset, args.turn_num)
+    args.folder_name = "{}_{}_{}".format(args.time_name, args.net_name, args.dataset)
     args.save_folder = osp.join(args.base_dir, args.folder_name)
     if not os.path.exists(args.save_folder):
         os.makedirs(args.save_folder)
@@ -113,29 +110,41 @@ class Trainer(object):
 
         ## cfg file
         with open(args.cfg_path) as f:
-            cfg = yaml.safe_load(f)
+            self.cfg = yaml.safe_load(f)
         with open(osp.join(self.args.save_folder, "cfg.yaml"), "w", encoding="utf-8") as file:
-            yaml.dump(cfg, file, allow_unicode=True)
-
-        using_pseudo_label = (args.pseudo_label == 1)
+            yaml.dump(self.cfg, file, allow_unicode=True)
 
         # dataset
         if args.dataset == "nudt":
-            trainset = NUDTDataset(base_dir=r"W:/DataSets/ISTD/NUDT-SIRST", mode="train", base_size=args.base_size, \
-                                pseudo_label=using_pseudo_label, turn_num=args.turn_num, file_name="", cfg=cfg)
-            valset = NUDTDataset(base_dir=r"W:/DataSets/ISTD/NUDT-SIRST", mode="test", base_size=args.base_size, cfg=cfg)
-        elif args.dataset == 'mdfa':
-            trainset = MDFADataset(base_dir=r"W:/DataSets/ISTD/MDvsFA",mode="train", base_size=args.base_size, \
-                                pseudo_label=using_pseudo_label, turn_num=args.turn_num, file_name="", cfg=cfg)
-            valset = MDFADataset(base_dir=r"W:/DataSets/ISTD/MDvsFA",mode="test", base_size=args.base_size, cfg=cfg)
+            trainset = NUDTDataset(
+                base_dir=r"../IRSTD/NUDT-SIRST", mode="train", base_size=args.base_size, cfg=self.cfg, 
+                pseudo_label=args.pesudo_label, offset=args.offset, turn_num=args.turn_num, target_mix=args.target_mix,
+                )
+            valset = NUDTDataset(
+                base_dir=r"../IRSTD/NUDT-SIRST", mode="test", base_size=args.base_size, cfg=self.cfg
+                )
+        # elif args.dataset == 'sirstaug':
+        #     trainset = SirstAugDataset(base_dir=r'./datasets/sirst_aug',
+        #                                mode='train', base_size=args.base_size)  # base_dir=r'E:\ztf\datasets\sirst_aug'
+        #     valset = SirstAugDataset(base_dir=r'./datasets/sirst_aug',
+        #                              mode='test', base_size=args.base_size)  # base_dir=r'E:\ztf\datasets\sirst_aug'
         elif args.dataset == "irstd1k":
-            trainset = IRSTD1kDataset(base_dir=r"W:/DataSets/ISTD/IRSTD-1k", mode="train", base_size=args.base_size, \
-                                pseudo_label=using_pseudo_label, turn_num=args.turn_num, file_name="", cfg=cfg)
-            valset = IRSTD1kDataset(base_dir=r"W:/DataSets/ISTD/IRSTD-1k", mode="test", base_size=args.base_size, cfg=cfg)
+            # trainset = IRSTD1kDataset(
+            #     base_dir=r"../IRSTD/IRSTD-1k", mode="train", base_size=args.base_size, cfg=self.cfg, pseudo_label=False
+            # )
+            trainset = IRSTD1kDataset(
+                base_dir=r"../IRSTD/IRSTD-1k", mode="train", base_size=args.base_size, cfg=self.cfg, 
+                pseudo_label=args.pesudo_label, offset=args.offset, turn_num=args.turn_num, target_mix=args.target_mix,
+                )
+            valset = IRSTD1kDataset(
+                base_dir=r"../IRSTD/IRSTD-1k", mode="test", base_size=args.base_size, cfg=self.cfg,
+                )
         else:
             raise NotImplementedError
+            
         if args.valset == 0:
-            val_indices, train_indices = split_indices_by_mod(0, len(trainset)-1, args.valset_mod, args.valset_rmd)
+            val_indices, train_indices = split_indices_by_mod(0, len(trainset)-1, 4, 0)
+            # 划分
             trainset, valset = Data.Subset(trainset, train_indices), Data.Subset(trainset, val_indices)
 
         self.train_data_loader = Data.DataLoader(trainset, batch_size=args.batch_size, drop_last=True, shuffle=True, pin_memory=True, num_workers=1)
@@ -149,16 +158,25 @@ class Trainer(object):
         self.device = torch.device("cuda:{}".format(args.gpu) if torch.cuda.is_available() else "cpu")
 
         # model
-        if args.net_name == "dnanet":
-            self.net = DNANet_withloss(False, 0.75)
-        elif args.net_name == "acmnet":
-            self.net = ASKCResUNet_withloss(0.75)
-        elif args.net_name == "agpcnet":
-            self.net = AGPCNet_withloss()
-        else:
-            raise NotImplementedError
-        
+        # net = BaseNet4(1, self.cfg)
+        # loss_fn = SoftLoULoss()
+        # self.net = attenMultiplyUNet_withloss(self.cfg, False)
+        self.net = DNANet_withloss(1, 
+                    input_channels=3, 
+                    block=Res_CBAM_block,
+                    num_blocks=[2, 2, 2, 2],
+                    nb_filter=[16, 32, 64, 128, 256],
+                    deep_supervision=True,
+                    grad_loss=False,
+                    softiou_dw=True)
+
+        # self.net.apply(self.weight_init)
         self.net = self.net.to(self.device)
+
+        ## criterion
+        # self.heatmap_softiou = Heatmap_SoftIoU(self.cfg)
+        # self.heatmap_mse = Heatmap_MSE(self.cfg)
+        # self.softiou = SoftLoULoss()
 
         ## lr scheduler
         self.scheduler = LR_Scheduler_Head(
@@ -170,6 +188,7 @@ class Trainer(object):
         # self.optimizer = torch.optim.SGD(self.net.parameters(), lr=args.learning_rate,
         #                                  momentum=0.9, weight_decay=1e-4)
         self.optimizer = torch.optim.Adam(self.net.parameters(), lr=args.lr)
+        # self.optimizer = torch.optim.Adam(self.net_heatmap.parameters(), lr=args.lr)
 
         ## evaluation metrics
         self.metric = SegmentationMetricTPFNFP(nclass=1)
@@ -181,7 +200,6 @@ class Trainer(object):
         self.miou = 0
         self.fmeasure = 0
         self.eval_my_PD_FA = my_PD_FA()
-        self.star_record_epoch_ratio = 0.75
 
         ## SummaryWriter
         self.writer = SummaryWriter(log_dir=args.save_folder)
@@ -198,15 +216,15 @@ class Trainer(object):
         base_log = "Epoch-Iter: [{:03d}/{:03d}]-[{:03d}/{:03d}]  || Lr: {:.6f} ||  Loss: {:.4f}={:.4f}+{:.4f}+{:.4f} || " \
                    "Cost Time: {} || Estimated Time: {}"
         for epoch in range(args.epochs):
-            for i, (data, label_) in enumerate(self.train_data_loader):
+            for i, (data, _, label) in enumerate(self.train_data_loader):
+            # for i, (data, label) in enumerate(self.train_data_loader):
                 data = data.to(self.device, non_blocking=True)
-                label = label_[:,1:2] if self.args.pseudo_label == 1 else label_[:,0:1]
+                data = data.repeat(1, 3, 1, 1)  # for DNANet
                 label = label.to(self.device, non_blocking=True)
-                label = (label > 0.5).float()
+                label_b = (label > self.cfg["label_vague_threshold"]).type(torch.float32)
 
                 # _, softiouloss, class_loss, detail_loss, loss_128, _ = self.net(data, label)
-                pred, softiouloss = self.net(data, label, epoch/args.epochs)
-                
+                pred, softiouloss = self.net(data, label_b, label, epoch/args.epochs)
                 # total_loss = softiouloss + class_loss + detail_loss + loss_128
                 total_loss = softiouloss
                 detail_loss = torch.tensor([0.], device=total_loss.device)
@@ -215,6 +233,10 @@ class Trainer(object):
                 self.optimizer.zero_grad()
                 total_loss.backward()
                 self.optimizer.step()
+
+                # for name, param in self.net.named_parameters():
+                #     if "net.linear" in name:
+                #         print(f"Gradient for {name}: {param.grad}")
 
                 self.iter_num += 1
 
@@ -244,7 +266,7 @@ class Trainer(object):
                         )
                     )
 
-                if self.iter_num % self.iter_per_epoch == 0 and epoch/args.epochs > self.star_record_epoch_ratio:
+                if self.iter_num % self.iter_per_epoch == 0:
                     self.net.eval()
                     self.validation()
                     self.net.train()
@@ -256,14 +278,26 @@ class Trainer(object):
         # self.eval_my_PD_FA.reset()
         base_log = "Data: {:s}, mIoU: {:.4f}/{:.4f}, prec: {:.4f}/{:.4f}, recall: {:.4f}/{:.4f}, F1: {:.4f}/{:.4f} "
         # base_log = "Data: {:s}, mIoU: {:.4f}/{:.4f}, F1: {:.4f}/{:.4f}, Pd:{:.4f}, Fa:{:.8f} "
-        for i, (img, label_) in enumerate(self.val_data_loader):
-            label = label_[:,1:2] if self.args.valset == 0 else label_[:,0:1]
+        for i, data in enumerate(self.val_data_loader):
+            if self.args.valset == 0:
+                img, _, labels = data
+            else:
+                img, labels = data
+            img = img.repeat(1, 3, 1, 1)  # for DNANet
             with torch.no_grad():
-                pred, _ = self.net(img.to(self.device, non_blocking=True), label.to(self.device, non_blocking=True))
-            out_T = pred.cpu()
+                # noise = torch.zeros((data.shape[0], 1, 32, 32), device=data.device)
+                # pred, _, _, _, _ = self.net.net(data.to(self.device))
+                pred, _ = self.net.net(img.to(self.device, non_blocking=True))
+                pred = pred[-1]
+            out_T = pred.cpu() 
 
-            label = (label > 0.5).float()
-            self.metric.update(label, out_T)
+            # loss_softiou = self.softiou(out_T, labels)
+            # loss_mse = self.mse(out_D, data)
+            # gamma = torch.Tensor([0.1]).to(self.device)
+            # loss_all = loss_softiou + torch.mul(gamma, loss_mse)
+            
+            labels = (labels > self.cfg["label_vague_threshold"]).type(torch.float32)
+            self.metric.update(labels, out_T)
         miou_all, prec_all, recall_all, fmeasure_all = self.metric.get()
 
         torch.save(self.net.state_dict(), osp.join(self.args.save_folder, "latest.pkl"))
@@ -276,6 +310,8 @@ class Trainer(object):
             self.best_prec = prec_all
         if recall_all > self.best_recall:
             self.best_recall = recall_all
+
+        # print(miou, self.best_miou, fmeasure, self.best_fmeasure)
 
         self.writer.add_scalar("Test/mIoU", miou_all, self.iter_num)
         self.writer.add_scalar("Test/F1", fmeasure_all, self.iter_num)

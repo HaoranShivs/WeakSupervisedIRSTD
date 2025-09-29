@@ -135,8 +135,9 @@ class AGPCNet_withloss(nn.Module):
         self.net = AGPCNet(backbone, scale, reduce_ratios, gca_type, gca_att, drop)
         self.softiou_loss_fn = SoftLoULoss_Epochs(epoch_ratio)
 
-    def forward(self, img, label, curr_epoch_ratio):
+    def forward(self, img, label, curr_epoch_ratio=0):
         img = img.repeat(1, 3, 1, 1)  # for DNANet
         res = self.net(img)
-        loss = self.softiou_loss_fn(res, label, curr_epoch_ratio)
-        return res, loss
+        pred = F.sigmoid(res)
+        loss = self.softiou_loss_fn(pred, label, curr_epoch_ratio)
+        return pred, loss

@@ -1198,13 +1198,14 @@ def compute_weighted_mean_variance(logits: torch.Tensor, mask: torch.Tensor, top
 
     # === 计算权重（指数衰减）===
     # d_max = torch.ones((H, W,k_pad), device=logits.device, dtype=torch.float32) * (H**2 + W**2) ** 0.5 * 0.5    # 半对角线长度
-    d_max = topk_dists.max(dim=-1, keepdim=True).values
-    # topk_dists_ = topk_dists.clone()
-    # topk_dists_[topk_dists_ == 0] = float('inf')
-    d_min = torch.zeros((H, W,k_pad), device=logits.device, dtype=torch.float32)
-    eps = 1e-8
-    sigma = (d_max - d_min + eps)
-    weights = torch.exp(-(topk_dists - d_min) / sigma)  # (H, W, k_pad)
+    # d_max = topk_dists.max(dim=-1, keepdim=True).values
+    # # topk_dists_ = topk_dists.clone()
+    # # topk_dists_[topk_dists_ == 0] = float('inf')
+    # d_min = torch.zeros((H, W,k_pad), device=logits.device, dtype=torch.float32)
+    # eps = 1e-8
+    # sigma = (d_max - d_min + eps)
+    # weights = torch.exp(-(topk_dists - d_min) / sigma)  # (H, W, k_pad)
+    weights = torch.exp(-topk_dists)
     # print(weights[5,5])
 
     # 屏蔽自身：如果当前像素在 mask 中且被选入 topk，则权重置0
@@ -1528,6 +1529,137 @@ def add_uniform_points_cuda(mask, seed, num1, part_ratio=1, logits=None, chunk_s
 
     return updated_seed
 
+def add_uniform_points_grid_cuda(mask, seed, num, jitter=True):
+    """
+    Add 'num' uniformly distributed points inside mask, avoiding seed,
+    using jittered grid + farthest selection (GPU optimized).
+
+    Args:
+        mask (torch.Tensor): [H, W], bool, valid region
+        seed (torch.Tensor): [H, W], bool, existing points
+        num (int): number of new points to add
+        jitter (bool): whether to add random jitter in each grid cell
+
+    Returns:
+        torch.Tensor: updated seed map, same shape as input
+    """
+    device = mask.device
+    H, W = mask.shape
+
+    # Ensure boolean
+    mask = mask.bool()
+    seed = seed.bool()
+
+    # Existing seed points (float format for distance computation)
+    existing_points = torch.nonzero(seed, as_tuple=False).float()  # [N, 2] (y, x)
+    N = existing_points.shape[0]
+
+    # Candidate area: mask but not seed
+    candidate_mask = mask & (~seed)
+    if num <= 0:
+        return seed.clone()
+    if not candidate_mask.any():
+        return seed.clone()
+
+    # -------------------------------
+    # Step 1: Generate jittered grid candidates
+    # -------------------------------
+    n_side = int(num ** 0.5) + 2  # Slightly over-sample
+    gy = torch.linspace(0, H - 1e-5, n_side + 1, device=device)  # Avoid edge issues
+    gx = torch.linspace(0, W - 1e-5, n_side + 1, device=device)
+
+    candidates = []
+    for i in range(n_side):
+        for j in range(n_side):
+            y0, y1 = gy[i], gy[i+1]
+            x0, x1 = gx[j], gx[j+1]
+            if jitter:
+                dy = torch.rand(1, device=device) * (y1 - y0)
+                dx = torch.rand(1, device=device) * (x1 - x0)
+                y = y0 + dy
+                x = x0 + dx
+            else:
+                y = (y0 + y1) / 2
+                x = (x0 + x1) / 2
+            candidates.append([y, x])
+
+    candidates = torch.tensor(candidates, device=device, dtype=torch.float32)  # [K, 2]
+    K = candidates.shape[0]
+
+    # Convert to integer coordinates for indexing
+    cand_int = candidates.long()  # [K, 2] (y, x)
+
+    # Filter: within bounds
+    valid = (cand_int[:, 0] < H) & (cand_int[:, 1] < W) & (cand_int[:, 0] >= 0) & (cand_int[:, 1] >= 0)
+    candidates = candidates[valid]
+    cand_int = cand_int[valid]
+
+    # Further filter: must be in mask and not in seed
+    spatial_valid = mask[cand_int[:, 0], cand_int[:, 1]] & (~seed[cand_int[:, 0], cand_int[:, 1]])
+    candidates = candidates[spatial_valid]
+    cand_int = cand_int[spatial_valid]
+
+    # If not enough grid points, supplement with random samples from candidate_mask
+    current_num = candidates.shape[0]
+    if current_num < num:
+        extra_coords = torch.nonzero(candidate_mask, as_tuple=False).float()
+        if extra_coords.shape[0] > 0:
+            # Remove duplicates (based on int coords)
+            all_existing_int = torch.cat([
+                torch.nonzero(seed, as_tuple=False),
+                cand_int
+            ], dim=0)
+            # Use set logic via unique
+            grid_or_seed = torch.zeros_like(candidate_mask)
+            for y, x in torch.unique(all_existing_int, dim=0):
+                if 0 <= y < H and 0 <= x < W:
+                    grid_or_seed[y, x] = True
+            extra_candidate_mask = candidate_mask & (~grid_or_seed)
+            extra_coords = torch.nonzero(extra_candidate_mask, as_tuple=False).float()
+
+            if extra_coords.shape[0] > 0:
+                # Randomly sample up to (num - current_num)
+                n_extra = min(num - current_num, extra_coords.shape[0])
+                perm = torch.randperm(extra_coords.shape[0], device=device)[:n_extra]
+                extra_candidates = extra_coords[perm]
+                candidates = torch.cat([candidates, extra_candidates], dim=0)
+                cand_int = torch.cat([cand_int, extra_candidates.long()], dim=0)
+
+    # Now we have at least `num` candidates (or fewer if very constrained)
+    if candidates.shape[0] == 0:
+        return seed.clone()
+
+    # -------------------------------
+    # Step 2: Select top-`num` points that are farthest from existing seed
+    # -------------------------------
+    if N > 0 and candidates.shape[0] > 0:
+        # Compute min distance from each candidate to any existing point
+        dists = torch.cdist(candidates, existing_points)  # [K', N]
+        min_dists = dists.min(dim=1).values  # [K']
+        # Select the `num` points with largest min-distance
+        k_select = min(num, min_dists.shape[0])
+        _, idx_selected = torch.topk(min_dists, k=k_select, largest=True)
+    else:
+        # No existing points or no candidates -> random selection
+        k_select = min(num, candidates.shape[0])
+        idx_selected = torch.randperm(candidates.shape[0], device=device)[:k_select]
+
+    final_cand_int = cand_int[idx_selected]  # [k_select, 2]
+
+    # -------------------------------
+    # Step 3: Update seed map
+    # -------------------------------
+    new_seed = seed.clone()
+    # Use advanced indexing for batch write (efficient on GPU)
+    ys = final_cand_int[:, 0]
+    xs = final_cand_int[:, 1]
+    valid_update = (ys < H) & (xs < W) & (ys >= 0) & (xs >= 0)
+    ys = ys[valid_update]
+    xs = xs[valid_update]
+    new_seed[ys, xs] = True
+
+    return new_seed
+
 def topk_mask(x, num, largest=True):
     """
     返回一个 mask，标记 Tensor 中最大的 num 个元素的位置。
@@ -1645,6 +1777,7 @@ def add_uniform_points_v2(mask, seed, num1):
     return add_uniform_points_cuda(mask, seed, num1)
 
 def add_uniform_points_v3(logits, mask, seed, num1, mode):
+    add_uniform_points_cuda = add_uniform_points_grid_cuda
     if mode == "fg":
         credit_mask = mask * (logits > 0.8)
         target_mask = credit_mask * ~seed

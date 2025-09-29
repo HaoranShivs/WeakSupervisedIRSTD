@@ -1,6 +1,7 @@
 import torch
 import torchvision.transforms as transforms
 from torchvision.transforms import functional as F
+from torchvision.transforms import InterpolationMode
 
 import random
 import numpy as np
@@ -85,8 +86,8 @@ class Augment_transform:
             # 使用 RandomResizedCrop 的内部逻辑生成随机参数
             i, j, h, w = transforms.RandomResizedCrop.get_params(img, scale=self.cropResize_scale, ratio=self.cropratio)
             # 应用相同的随机参数到图像和 mask，分别使用不同的插值方式
-            transformed_image = F.resized_crop(img, i, j, h, w, self.base_size, interpolation=Image.BILINEAR, antialias=True)  # 双线性插值
-            transformed_mask = F.resized_crop(mask, i, j, h, w, self.base_size, interpolation=Image.BILINEAR, antialias=True)    # 最近邻插值
+            transformed_image = F.resized_crop(img, i, j, h, w, self.base_size, interpolation=InterpolationMode.BILINEAR, antialias=True)  # 双线性插值
+            transformed_mask = F.resized_crop(mask, i, j, h, w, self.base_size, interpolation=InterpolationMode.BILINEAR)    # 最近邻插值
 
             # 使用 RandomAffine 的内部逻辑生成随机参数
             center = (self.base_size // 2, self.base_size // 2)
@@ -103,7 +104,7 @@ class Augment_transform:
                 translate=translations,
                 scale=scale_factor,
                 shear=shear_values,
-                interpolation=Image.NEAREST,  # 双线性插值
+                interpolation=InterpolationMode.BILINEAR,  # 双线性插值
                 center=center
             )
             transformed_mask = F.affine(
@@ -112,7 +113,7 @@ class Augment_transform:
                 translate=translations,
                 scale=scale_factor,
                 shear=shear_values,
-                interpolation=Image.NEAREST,  # 最近邻插值
+                interpolation=InterpolationMode.NEAREST,  # 最近邻插值
                 center=center
             )
             # 随机生成是否进行水平翻转的概率
@@ -125,7 +126,7 @@ class Augment_transform:
                 transformed_mask = transformed_mask
         elif self.mode == "test":
             transformed_image = F.resize(img, [self.base_size, self.base_size], antialias=True)
-            transformed_mask = F.resize(mask, [self.base_size, self.base_size], interpolation=transforms.InterpolationMode.BILINEAR, antialias=True)
+            transformed_mask = F.resize(mask, [self.base_size, self.base_size], interpolation=InterpolationMode.BILINEAR, antialias=True)
         else:
             raise ValueError("mode should be train or test") 
 
@@ -231,6 +232,7 @@ class Augment_transform:
 #         # a = input()
 #     return img, mask
 
+
 # def random_position(self, edge, mask):
 #     """
 #     Randomly choose a position for the target where there are some edges.
@@ -260,6 +262,7 @@ class Augment_transform:
 #         rh_idx, rw_idx = rh_idx * 8 + 4, rw_idx * 8 + 4
 
 #     return rh_idx, rw_idx
+
 
 def mask2point(mask, img, offset=3):
     # 将mask和img转换为numpy数组

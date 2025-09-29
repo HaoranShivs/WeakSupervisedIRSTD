@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.loss import SoftLoULoss_Epochs
+from utils.loss import SoftLoULoss_Epochs, SoftLoULoss
 
 
 class _FCNHead(nn.Module):
@@ -107,7 +107,7 @@ class AsymBiChaFuse(nn.Module):
         # Top-down pathway: from high-level feature (xh)
         self.topdown = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),  # Global Average Pooling
-            nn.Conv2d(self.bottleneck_channels, self.bottleneck_channels, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.Conv2d(channels, self.bottleneck_channels, kernel_size=1, stride=1, padding=0, bias=False),
             nn.BatchNorm2d(self.bottleneck_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(self.bottleneck_channels, channels, kernel_size=1, stride=1, padding=0, bias=False),
@@ -289,10 +289,14 @@ class ASKCResUNet_withloss(nn.Module):
 
         self.net = ASKCResUNet(layers, channels, 'AsymBi', tiny, classes, norm_layer)
         self.softiou_loss_fn = SoftLoULoss_Epochs(epoch_ratio)
+        # self.softiou_loss_fn = SoftLoULoss()
 
-    def forward(self, img, label, curr_epoch_ratio):
+    def forward(self, img, label, curr_epoch_ratio=0):
         img = img.repeat(1, 3, 1, 1)  # for DNANet
         res = self.net(img)
-        loss = self.softiou_loss_fn(res, label, curr_epoch_ratio)
-        return res, loss
+        pred = F.sigmoid(res)
+        # print("res min/max/mean:", res.min().item(), res.max().item(), res.mean().item())
+        # print("pred min/max/mean:", pred.min().item(), pred.max().item(), pred.mean().item())
+        loss = self.softiou_loss_fn(pred, label, curr_epoch_ratio)
+        return pred, loss
 

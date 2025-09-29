@@ -8,10 +8,11 @@ class SoftLoULoss(nn.Module):
         super(SoftLoULoss, self).__init__()
 
     def forward(self, pred, target):
-        smooth = 0.1
+        smooth = 1
         intersection = pred * target
 
         intersection_sum = torch.sum(intersection, dim=(1,2,3))
+        
         pred_sum = torch.sum(pred, dim=(1,2,3))
         target_sum = torch.sum(target, dim=(1,2,3))
         loss = (intersection_sum + smooth) / \
@@ -27,7 +28,7 @@ class SoftLoULoss_Epochs(nn.Module):
         self.epoch_ratio = epoch_ratio
 
     def forward(self, pred, target, curr_epoch_ratio):
-        smooth = 0.1
+        smooth = 1
         intersection = pred * target
 
         if curr_epoch_ratio < self.epoch_ratio:

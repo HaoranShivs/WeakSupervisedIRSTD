@@ -5,6 +5,7 @@ import numpy as np
 import pydensecrf.densecrf as dcrf
 from pydensecrf.utils import unary_from_softmax, create_pairwise_bilateral, create_pairwise_gaussian
 from scipy.ndimage import label as ndlabel
+from scipy import ndimage
 
 from utils.utils import gaussian_kernel
 
@@ -286,11 +287,11 @@ def robust_min_max(tensor, threshold=0.1, percentile=0.1):
     k = max(1, int(num_elements * percentile + 0.5))  # 四舍五入并至少取1个
 
     # 4. 取前10%和后10%，并计算均值
-    bottom_k = sorted_elements[:k]
-    top_k = sorted_elements[-k:]
+    bottom_k = sorted_elements[k]
+    top_k = sorted_elements[-k]
 
-    robust_min = bottom_k.mean().item()
-    robust_max = top_k.mean().item()
+    robust_min = bottom_k.item()
+    robust_max = top_k.item()
 
     return robust_min, robust_max
 
@@ -384,6 +385,41 @@ def filter_mask_by_points(mask: torch.Tensor, points: torch.Tensor, kernel_size=
     filtered_mask_tensor = torch.tensor(filtered_mask, dtype=torch.uint8, device=mask.device)
     
     return filtered_mask_tensor
+
+def remove_small_components(mask, min_size=4):
+    """
+    去除二值掩码中小于指定大小的连通组件
+    
+    参数:
+    mask : numpy.ndarray
+        输入的二值掩码（布尔型或0/1整型）
+    min_size : int, 默认为4
+        保留连通组件的最小像素数量
+        
+    返回:
+    cleaned_mask : numpy.ndarray
+        清理后的二值掩码，只包含像素数量 >= min_size 的连通组件
+    """
+    # 确保输入是布尔类型
+    mask_bool = mask.astype(bool)
+    
+    # 使用scipy.ndimage.label标记连通组件
+    labeled_array, num_features = ndimage.label(mask_bool)
+    
+    # 如果没有连通组件，直接返回原mask
+    if num_features == 0:
+        return mask_bool
+    
+    # 计算每个连通组件的大小
+    component_sizes = ndimage.sum(mask_bool, labeled_array, range(1, num_features + 1))
+    
+    # 找出大小 >= min_size 的连通组件
+    valid_components = np.where(component_sizes >= min_size)[0] + 1  # +1因为标签从1开始
+    
+    # 创建清理后的mask
+    cleaned_mask = np.isin(labeled_array, valid_components)
+    
+    return torch.tensor(cleaned_mask)
 
 def mapping_4_crf(tensor, grad_intensity, ratio=0.5, max_val=0.5001, min_val=0.4999):
     output = torch.zeros_like(tensor)
