@@ -43,7 +43,7 @@ class LR_Scheduler(object):
         self.warmup_iters = warmup_epochs * iters_per_epoch
         self.total_iters = (num_epochs - warmup_epochs) * iters_per_epoch
 
-    def __call__(self, optimizer, i, epoch, best_pred):
+    def __call__(self, optimizer, i, epoch, best_pred, coeff_poly=1.0):
         T = epoch * self.iters_per_epoch + i
         # warm up lr schedule
         if self.warmup_iters > 0 and T < self.warmup_iters:
@@ -53,7 +53,7 @@ class LR_Scheduler(object):
             lr = 0.5 * self.base_lr * (1 + math.cos(1.0 * T / self.total_iters * math.pi))
         elif self.mode == 'poly':
             T = T - self.warmup_iters
-            lr = self.base_lr * pow((1 - 1.0 * T / self.total_iters), 0.9)
+            lr = self.base_lr * pow((1 - coeff_poly * T / self.total_iters), 0.9)
         elif self.mode == 'step':
             lr = self.base_lr * (0.1 ** (epoch // self.lr_step))
         elif self.mode == 'half_poly':

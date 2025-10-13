@@ -8,3 +8,7 @@ bash run.sh -f ../IRSTD/IRSTD-1k/trainval/pixel_pseudo_label0.39.zip -d irstd1k 
 bash run.sh -f ../IRSTD/NUDT-SIRST/trainval/pixel_pseudo_label0.55.zip -d nudt -e 200 -b 16 -s 256 -v 0 -n acmnet -r 10 -l 0.01 -m 0
 
 bash run.sh -f ../IRSTD/NUDT-SIRST/trainval/pixel_pseudo_label1.68_dna.zip -d nudt -e 200 -b 16 -s 256 -v 0 -n dnanet -r 10 -l 0.001 -m 1
+
+bash run.sh -f ../IRSTD/NUDT-SIRST/trainval/pixel_pseudo_label1.79_acm.zip -d nudt -e 100 -b 16 -s 256 -v 0 -n acmnet -r 10 -l 0.008 -h 0.006  -m 2 -c result/20251004T01-12-22_acmnet_nudt_0.62
+
+bash run.sh -f ../IRSTD/IRSTD-1k/trainval/pixel_pseudo_label1.81_acm.zip -d irstd1k -e 100 -b 16 -s 256 -v 0 -n acmnet -r 10 -l 0.008 -h 0.006  -m 2 -c result/20251007T16-12-40_acmnet_irstd1k_0.63

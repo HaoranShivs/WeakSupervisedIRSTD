@@ -4,66 +4,292 @@ import numpy as np
 
 from utils.utils import iou_score, gaussian_blurring_2D, gaussian_kernel
 
-def proper_region(pred, c1, c2, extend_factor=0.5):
-    """
-    由训练过的模型的预测和点标签的坐标，得到一个合适的区域。
-    参数:
-        pred (torch.Tensor): 形状为 [H, W]。
-    输出：
-        s1 (int): 区域的起始高度索引。
-        e1 (int): 区域的结束高度索引。
-        s2 (int): 区域的起始宽度索引。
-        e2 (int): 区域的结束宽度索引。
-    """
-    initial_size = 64
-    half_size = initial_size // 2
-    pred_ = F.pad(pred, [half_size, half_size, half_size, half_size], value=0)
-    s1 = c1
-    e1 = c1 + initial_size
-    s2 = c2
-    e2 = c2 + initial_size
-    mini_size = 6
-    # 合适上边界
-    for i in range(mini_size//2, half_size):
-        s1 = c1 + half_size - i
-        if torch.sum(pred_[s1, s2:e2]) < 1.:
-            break
-    # 下边界
-    for i in range(mini_size//2, half_size):
-        e1 = c1 + half_size + i + 1
-        if torch.sum(pred_[e1, s2:e2])  < 1:
-            break
-    # 左边界
-    for i in range(mini_size//2, half_size):
-        s2 = c2 + half_size - i
-        if torch.sum(pred_[s1:e1, s2])  < 1:
-            break
-    # 右边界
-    for i in range(mini_size//2, half_size):
-        e2 = c2 + half_size + i + 1
-        if torch.sum(pred_[s1:e1, e2])  < 1:
-            break
+# def proper_region_(pred, c1, c2, extend_factor=0.5):
+#     """
+#     由训练过的模型的预测和点标签的坐标，得到一个合适的区域。
+#     参数:
+#         pred (torch.Tensor): 形状为 [H, W]。
+#     输出：
+#         s1 (int): 区域的起始高度索引。
+#         e1 (int): 区域的结束高度索引。
+#         s2 (int): 区域的起始宽度索引。
+#         e2 (int): 区域的结束宽度索引。
+#     """
+#     initial_size = 64
+#     half_size = initial_size // 2
+#     pred_ = F.pad(pred, [half_size, half_size, half_size, half_size], value=0)
+#     s1 = c1
+#     e1 = c1 + initial_size
+#     s2 = c2
+#     e2 = c2 + initial_size
+#     mini_size = 6
+#     # 合适上边界
+#     for i in range(mini_size//2, half_size):
+#         s1 = c1 + half_size - i
+#         if torch.sum(pred_[s1, s2:e2]) < 1.:
+#             break
+#     # 下边界
+#     for i in range(mini_size//2, half_size):
+#         e1 = c1 + half_size + i + 1
+#         if torch.sum(pred_[e1, s2:e2])  < 1:
+#             break
+#     # 左边界
+#     for i in range(mini_size//2, half_size):
+#         s2 = c2 + half_size - i
+#         if torch.sum(pred_[s1:e1, s2])  < 1:
+#             break
+#     # 右边界
+#     for i in range(mini_size//2, half_size):
+#         e2 = c2 + half_size + i + 1
+#         if torch.sum(pred_[s1:e1, e2])  < 1:
+#             break
 
-    s1, e1, s2, e2 = s1 - half_size, e1 - half_size, s2 - half_size, e2 - half_size
-    s1, e1 = max(s1, 1), min(e1, pred.shape[0] - 2)
-    s2, e2 = max(s2, 1), min(e2, pred.shape[1] - 2)
+#     s1, e1, s2, e2 = s1 - half_size, e1 - half_size, s2 - half_size, e2 - half_size
+#     s1, e1 = max(s1, 1), min(e1, pred.shape[0] - 2)
+#     s2, e2 = max(s2, 1), min(e2, pred.shape[1] - 2)
     
-    s1_, e1_ = s1 - int((e1 - s1) * extend_factor / 2), e1 + int((e1 - s1) * extend_factor / 2)
-    s2_, e2_ = s2 - int((e2 - s2) * extend_factor / 2), e2 + int((e2 - s2) * extend_factor / 2)
-    s1_ = s1_ if s1_ > 1 else 1
-    e1_ = e1_ if e1_ < pred.shape[0] - 2 else pred.shape[0] - 2
-    s2_ = s2_ if s2_ > 1 else 1
-    e2_ = e2_ if e2_ < pred.shape[1] - 2 else pred.shape[1] - 2
-    # print(c1, c2, s1, e1, s2, e2, s1_, e1_, s2_, e2_)
+#     s1_, e1_ = s1 - int((e1 - s1) * extend_factor / 2), e1 + int((e1 - s1) * extend_factor / 2)
+#     s2_, e2_ = s2 - int((e2 - s2) * extend_factor / 2), e2 + int((e2 - s2) * extend_factor / 2)
+#     s1_ = s1_ if s1_ > 1 else 1
+#     e1_ = e1_ if e1_ < pred.shape[0] - 2 else pred.shape[0] - 2
+#     s2_ = s2_ if s2_ > 1 else 1
+#     e2_ = e2_ if e2_ < pred.shape[1] - 2 else pred.shape[1] - 2
+#     # print(c1, c2, s1, e1, s2, e2, s1_, e1_, s2_, e2_)
     
-    return (int(s1_), int(e1_), int(s2_), int(e2_))
+#     return (int(s1_), int(e1_), int(s2_), int(e2_))
 
-def examine_iou(final_target, pesudo_label, image, iou_treshold=0.5):
+# def proper_region(pred, c1, c2, extend_factor=0.5, initial_size=64, mini_size=6):
+#     """
+#     从中心点 (c1, c2) 向外搜索非零区域边界，生成紧密包围区域，并向外扩展。
+    
+#     参数:
+#         pred (torch.Tensor): [H, W] 预测热图
+#         c1, c2 (int): 中心点坐标（原始图像坐标）
+#         extend_factor (float): 最终区域扩展比例（如 0.5 表示扩大 50%）
+#         initial_size (int): 最大搜索半径（实际搜索范围为 ±initial_size//2）
+#         mini_size (int): 最小搜索步长（避免过于贴近中心）
+    
+#     返回:
+#         (s1_, e1_, s2_, e2_): 扩展后的区域边界（int）
+#     """
+#     H, W = pred.shape
+#     assert 0 <= c1 < H and 0 <= c2 < W, f"Center ({c1}, {c2}) out of image bounds [{H}, {W}]"
+
+#     half_search = initial_size // 2
+#     min_step = mini_size // 2
+
+#     # 为了安全索引，对 pred 进行 padding（避免越界）
+#     pred_padded = F.pad(pred, (half_search, half_search, half_search, half_search), value=0.0)
+#     pad_offset = half_search  # 原始 (c1, c2) 在 padded 中的位置是 (c1+pad_offset, c2+pad_offset)
+
+#     center_r = c1 + pad_offset
+#     center_c = c2 + pad_offset
+
+#     # 辅助函数：从中心沿某一方向搜索边界
+#     def find_boundary(center, axis, direction, other_slice):
+#         """
+#         从 center 开始，沿 direction 方向搜索第一个“空”位置，返回最后一个“非空”位置。
+        
+#         参数:
+#             center (int): 中心坐标（在 padded 图中）
+#             axis (int): 0 表示行（高度），1 表示列（宽度）
+#             direction (int): -1 表示负方向（上/左），+1 表示正方向（下/右）
+#             other_slice (slice): 另一维度的切片（用于求和）
+        
+#         返回:
+#             boundary (int): 边界坐标（在 padded 图中）
+#         """
+#         # 默认边界：走到最远
+#         boundary = center + direction * half_search
+
+#         for i in range(min_step, half_search + 1):
+#             pos = center + direction * i
+#             # 提取该行或该列的响应
+#             if axis == 0:  # 行方向（上下）
+#                 val = torch.sum(pred_padded[pos, other_slice])
+#             else:          # 列方向（左右）
+#                 val = torch.sum(pred_padded[other_slice, pos])
+            
+#             if val < 1.0:  # 遇到空行/列
+#                 # 边界应为前一个位置（即 i-1 处）
+#                 boundary = center + direction * (i - 1)
+#                 break
+        
+#         return boundary
+
+#     # 先确定垂直方向（行）的范围：需要知道列范围才能求行和？但列范围又依赖行范围 → 耦合！
+
+#     # 🔄 解决方案：先用初始列范围 [center_c - half_search, center_c + half_search) 搜索行边界
+#     # 再用得到的行范围搜索列边界（两轮迭代，或使用初始窗口）
+    
+#     # 使用初始窗口作为“other_slice”的初始估计
+#     init_row_slice = slice(center_r - half_search, center_r + half_search)
+#     init_col_slice = slice(center_c - half_search, center_c + half_search)
+
+#     # 上边界（方向 -1，行方向）
+#     top = find_boundary(center_r, axis=0, direction=-1, other_slice=init_col_slice)
+#     # 下边界（方向 +1，行方向）
+#     bottom = find_boundary(center_r, axis=0, direction=+1, other_slice=init_col_slice) + 1  # 转为左闭右开
+
+#     # 用新的行范围搜索列边界
+#     row_slice = slice(top, bottom)
+#     # 左边界（方向 -1，列方向）
+#     left = find_boundary(center_c, axis=1, direction=-1, other_slice=row_slice)
+#     # 右边界（方向 +1，列方向）
+#     right = find_boundary(center_c, axis=1, direction=+1, other_slice=row_slice) + 1  # 转为左闭右开
+
+#     # 映射回原始坐标系
+#     s1 = top - pad_offset
+#     e1 = bottom - pad_offset
+#     s2 = left - pad_offset
+#     e2 = right - pad_offset
+
+#     # 裁剪到有效范围（保留至少 1 像素 margin）
+#     s1 = max(s1, 1)
+#     e1 = min(e1, H - 2)
+#     s2 = max(s2, 1)
+#     e2 = min(e2, W - 2)
+
+#     # 确保区域有效
+#     if s1 >= e1:
+#         s1, e1 = max(1, c1 - 1), min(H - 2, c1 + 2)
+#     if s2 >= e2:
+#         s2, e2 = max(1, c2 - 1), min(W - 2, c2 + 2)
+
+#     # 扩展区域
+#     h = e1 - s1
+#     w = e2 - s2
+#     dh = int(h * extend_factor / 2)
+#     dh = dh if dh > 2 else 2
+#     dw = int(w * extend_factor / 2)
+#     dw = dw if dw > 2 else 2
+
+#     s1_ = max(1, s1 - dh)
+#     e1_ = min(H - 2, e1 + dh)
+#     s2_ = max(1, s2 - dw)
+#     e2_ = min(W - 2, e2 + dw)
+
+#     return int(s1_), int(e1_), int(s2_), int(e2_)
+
+def proper_region(pred, c1, c2, extend_factor=0.5, initial_size=64, mini_size=6):
+    H, W = pred.shape
+    assert 0 <= c1 < H and 0 <= c2 < W, f"Center ({c1}, {c2}) out of image bounds [{H}, {W}]"
+
+    half_search = initial_size // 2
+    min_step = mini_size // 2
+
+    pred_padded = F.pad(pred, (half_search, half_search, half_search, half_search), value=0.0)
+    pad_offset = half_search
+    center_r = c1 + pad_offset
+    center_c = c2 + pad_offset
+
+    def find_boundary(center, axis, direction, other_slice):
+        boundary = center + direction * half_search
+        for i in range(min_step, half_search + 1):
+            pos = center + direction * i
+            val = torch.sum(pred_padded[pos, other_slice]) if axis == 0 else torch.sum(pred_padded[other_slice, pos])
+            if val < 1.0:
+                boundary = center + direction * (i - 1)
+                break
+        return boundary
+
+    init_col_slice = slice(center_c - half_search, center_c + half_search)
+    top = find_boundary(center_r, axis=0, direction=-1, other_slice=init_col_slice)
+    bottom = find_boundary(center_r, axis=0, direction=+1, other_slice=init_col_slice) + 1
+
+    row_slice = slice(top, bottom)
+    left = find_boundary(center_c, axis=1, direction=-1, other_slice=row_slice)
+    right = find_boundary(center_c, axis=1, direction=+1, other_slice=row_slice) + 1
+
+    s1 = max(1, top - pad_offset)
+    e1 = min(H - 2, bottom - pad_offset)
+    s2 = max(1, left - pad_offset)
+    e2 = min(W - 2, right - pad_offset)
+
+    if s1 >= e1:
+        s1, e1 = max(1, c1 - 1), min(H - 2, c1 + 2)
+    if s2 >= e2:
+        s2, e2 = max(1, c2 - 1), min(W - 2, c2 + 2)
+
+    # 计算扩展量
+    h, w = e1 - s1, e2 - s2
+    dh = max(2, int(h * extend_factor / 2))
+    dw = max(2, int(w * extend_factor / 2))
+
+    s1_ = max(1, s1 - dh)
+    e1_ = min(H - 2, e1 + dh)
+    s2_ = max(1, s2 - dw)
+    e2_ = min(W - 2, e2 + dw)
+
+    # ✅ 新增：裁剪到最大尺寸 64，按比例削减
+    def _clip_to_max_size(s, e, center, max_len, H_limit):
+        """
+        将区间 [s, e) 裁剪至长度 ≤ max_len，以 center 为中心，按距离比例分配削减。
+        同时保证结果在 [1, H_limit-2] 内且包含 center。
+        """
+        current_len = e - s
+        if current_len <= max_len:
+            return s, e
+
+        # 当前各方向到中心的距离
+        dist_start = center - s      # 左/上侧长度
+        dist_end = e - center        # 右/下侧长度（注意：e 是开区间，center < e）
+
+        total_dist = dist_start + dist_end
+        if total_dist == 0:
+            # 极端情况：s == e == center，直接返回最小区域
+            new_s = max(1, center)
+            new_e = min(H_limit - 2, center + 1)
+            return new_s, new_e
+
+        # 需要削减的总量
+        excess = current_len - max_len
+
+        # 按比例分配削减量（可为浮点，最后取整）
+        cut_start = excess * dist_start / total_dist
+        cut_end = excess * dist_end / total_dist
+
+        # 向上取整确保不超过 max_len（保守裁剪）
+        cut_start = int(cut_start + 0.5)
+        cut_end = int(cut_end + 0.5)
+
+        # 应用削减
+        new_s = s + cut_start
+        new_e = e - cut_end
+
+        # 确保包含 center
+        if new_s > center:
+            new_s = center
+        if new_e <= center:
+            new_e = center + 1
+
+        # 裁剪到图像有效范围
+        new_s = max(1, new_s)
+        new_e = min(H_limit - 2, new_e)
+
+        # 再次确保长度 ≤ max_len（浮点误差防护）
+        if new_e - new_s > max_len:
+            # 极端情况：强制以 center 为中心裁剪
+            half = max_len // 2
+            new_s = max(1, center - half)
+            new_e = min(H_limit - 2, new_s + max_len)
+            if new_e <= center:
+                new_e = center + 1
+                new_s = max(1, new_e - max_len)
+
+        return new_s, new_e
+    
+    MAX_SIZE = 64
+    s1_, e1_ = _clip_to_max_size(s1_, e1_, c1, MAX_SIZE, H)
+    s2_, e2_ = _clip_to_max_size(s2_, e2_, c2, MAX_SIZE, W)
+
+    return int(s1_), int(e1_), int(s2_), int(e2_)
+
+def examine_iou(final_target, pesudo_label, iou_treshold=0.5):
     """
     最终伪标签与上轮伪标签的iou，并返回结果。
     final_target (torch.Tensor): (H,W)模型输出的伪标签。
     pesudo_label (torch.Tensor): (H,W)上轮的伪标签。
-    image(torch.Tensor): (H,W)上轮的伪标签。
     iou_treshold (float): iou阈值，默认为0.5。
     """
     if (final_target * pesudo_label).float().sum() >= 4:

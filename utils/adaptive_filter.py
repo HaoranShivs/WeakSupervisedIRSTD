@@ -348,7 +348,7 @@ def dense_crf(logit_map, image, iter_num=5, bi_sdims=3, bi_schan=10, bi_compat=1
 def hist_mapping(hist, alpha=1.):
     return 1 - torch.exp(-alpha*hist)
 
-def filter_mask_by_points(mask: torch.Tensor, points: torch.Tensor, kernel_size=7) -> torch.Tensor:
+def filter_mask_by_points_(mask: torch.Tensor, points: torch.Tensor, kernel_size=7) -> torch.Tensor:
     """
     根据点标签过滤 mask, 保留与点标签相重合的 mask 区域。
     
@@ -385,6 +385,91 @@ def filter_mask_by_points(mask: torch.Tensor, points: torch.Tensor, kernel_size=
     filtered_mask_tensor = torch.tensor(filtered_mask, dtype=torch.uint8, device=mask.device)
     
     return filtered_mask_tensor
+
+def filter_mask_by_points(mask: torch.Tensor, points: torch.Tensor, kernel_size=7) -> torch.Tensor:
+    """
+    GPU-friendly version. Keeps connected components of `mask` that intersect with `points`.
+    
+    Args:
+        mask: (H, W), bool or 0/1 tensor
+        points: (H, W), tensor (will be binarized as >0.9)
+        kernel_size: int, for point tolerance (dilation)
+    
+    Returns:
+        filtered_mask: (H, W), uint8 tensor on same device as input
+    """
+    assert mask.shape == points.shape
+    H, W = mask.shape
+    device = mask.device
+
+    # Step 1: Dilate points to create tolerance region
+    points_bin = (points > 0.9).float()
+    if kernel_size > 1:
+        padding = kernel_size // 2
+        points_dilated = F.max_pool2d(
+            points_bin.unsqueeze(0).unsqueeze(0),
+            kernel_size=kernel_size,
+            stride=1,
+            padding=padding
+        ).squeeze(0).squeeze(0)  # (H, W)
+    else:
+        points_dilated = points_bin
+
+    # Step 2: Ensure mask is binary
+    mask_bin = (mask > 0.5).bool()
+
+    # If no mask or no points, return zero
+    if not mask_bin.any() or not points_dilated.any():
+        return torch.zeros_like(mask, dtype=torch.uint8)
+
+    # Step 3: Find connected components using iterative labeling (GPU)
+    # We'll use a simple BFS-like approach via dilation
+    labeled = torch.zeros_like(mask_bin, dtype=torch.int32)
+    label = 1
+
+    # Work on a copy
+    remaining = mask_bin.clone()
+
+    while remaining.any():
+        # Pick the first foreground pixel as seed
+        idx = torch.nonzero(remaining, as_tuple=False)[0]  # (2,)
+        seed = torch.zeros_like(remaining)
+        seed[idx[0], idx[1]] = True
+
+        # Grow the region via iterative dilation (8-connectivity)
+        region = seed.clone()
+        prev_sum = 0
+        curr_sum = region.sum()
+        while curr_sum != prev_sum:
+            # Dilate with 3x3 ones (8-connectivity)
+            dilated = F.max_pool2d(
+                region.float().unsqueeze(0).unsqueeze(0),
+                kernel_size=3,
+                stride=1,
+                padding=1
+            ).squeeze(0).squeeze(0) > 0.5
+            # Intersect with original mask to stay within component
+            region = dilated & mask_bin
+            prev_sum = curr_sum
+            curr_sum = region.sum()
+
+        # Assign label
+        labeled[region] = label
+        # Remove this region from remaining
+        remaining = remaining & (~region)
+        label += 1
+
+    num_labels = label - 1
+
+    # Step 4: Check which components intersect with points_dilated
+    filtered_mask = torch.zeros_like(mask, dtype=torch.uint8)
+    for l in range(1, num_labels + 1):
+        component = (labeled == l)
+        # Check intersection
+        if (component & (points_dilated > 0.5)).any():
+            filtered_mask = filtered_mask | component.byte()
+
+    return filtered_mask
 
 def remove_small_components(mask, min_size=4):
     """
@@ -572,3 +657,5 @@ def mapping_4_crf_v5(tensor, grad_intensity, ratio=0.5, node_list=[0.7, 0.5]):
     output = torch.where((grad_intensity_area > output)*minimum_mask, grad_intensity_area, output)
 
     return output
+
+# def mix_last()

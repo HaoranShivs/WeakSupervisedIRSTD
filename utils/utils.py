@@ -6,6 +6,33 @@ import matplotlib.pyplot as plt
 
 import math
 
+# 全局缓存变量（初始为 None）
+_GLOBAL_DIST_MATRIX_64 = None
+
+def get_distance_matrix_64(device='cpu'):
+    """
+    返回 64x64 图像的全局像素距离矩阵 (4096, 4096)
+    首次调用时计算并缓存，后续直接返回（自动迁移到指定 device）
+    """
+    global _GLOBAL_DIST_MATRIX_64
+
+    if _GLOBAL_DIST_MATRIX_64 is None:
+        # 只在 CPU 上计算一次（节省显存），后续按需迁移到 GPU
+        # print("首次计算 64x64 距离矩阵...")
+        H, W = 64, 64
+        y = torch.arange(H, dtype=torch.float32)
+        x = torch.arange(W, dtype=torch.float32)
+        y_flat = y.repeat_interleave(W)  # (4096,)
+        x_flat = x.repeat(H)             # (4096,)
+        y_col = y_flat[:, None]  # (4096, 1)
+        x_col = x_flat[:, None]
+        y_row = y_flat[None, :]  # (1, 4096)
+        x_row = x_flat[None, :]
+        dist = torch.sqrt((y_col - y_row) ** 2 + (x_col - x_row) ** 2)
+        _GLOBAL_DIST_MATRIX_64 = dist  # 保存在 CPU 上
+
+    return _GLOBAL_DIST_MATRIX_64.to(device)
+
 
 def dilate_mask(mask, d=2):
     kernel_size = 2 * d + 1
@@ -1198,14 +1225,13 @@ def compute_weighted_mean_variance(logits: torch.Tensor, mask: torch.Tensor, top
 
     # === 计算权重（指数衰减）===
     # d_max = torch.ones((H, W,k_pad), device=logits.device, dtype=torch.float32) * (H**2 + W**2) ** 0.5 * 0.5    # 半对角线长度
-    # d_max = topk_dists.max(dim=-1, keepdim=True).values
-    # # topk_dists_ = topk_dists.clone()
-    # # topk_dists_[topk_dists_ == 0] = float('inf')
-    # d_min = torch.zeros((H, W,k_pad), device=logits.device, dtype=torch.float32)
-    # eps = 1e-8
-    # sigma = (d_max - d_min + eps)
-    # weights = torch.exp(-(topk_dists - d_min) / sigma)  # (H, W, k_pad)
-    weights = torch.exp(-topk_dists)
+    d_max = topk_dists.max(dim=-1, keepdim=True).values
+    # topk_dists_ = topk_dists.clone()
+    # topk_dists_[topk_dists_ == 0] = float('inf')
+    d_min = torch.zeros((H, W,k_pad), device=logits.device, dtype=torch.float32)
+    eps = 1e-8
+    sigma = (d_max - d_min + eps)
+    weights = torch.exp(-(topk_dists - d_min) / sigma)  # (H, W, k_pad)
     # print(weights[5,5])
 
     # 屏蔽自身：如果当前像素在 mask 中且被选入 topk，则权重置0
@@ -1264,6 +1290,284 @@ def compute_weighted_mean_variance(logits: torch.Tensor, mask: torch.Tensor, top
     # print(var_w[11,8])
 
     return mean_wo, var_wo, mean_w, var_w
+
+def compute_weighted_mean_variance_fast_v1(
+    logits: torch.Tensor,
+    mask_coords: torch.Tensor,        # [N, 2], precomputed
+    mask_logits_vals: torch.Tensor,   # [N], precomputed
+    coords_grid: torch.Tensor,        # [H*W, 2], precomputed once
+    top_k: int = None,
+    device: torch.device = None
+):
+    """
+    Fast version for small images (<=64x64).
+    Inputs are precomputed sparse representations.
+    """
+    if mask_coords.numel() == 0:
+        H, W = logits.shape
+        zero = torch.zeros_like(logits)
+        return zero, zero, zero, zero
+
+    H, W = logits.shape
+    N = mask_coords.shape[0]
+    HW = H * W
+
+    # Flatten logits for easy indexing
+    logits_flat = logits.view(-1)  # [HW]
+
+    # All pixel coords: [HW, 2]
+    all_pixel_coords = coords_grid  # precomputed
+
+    # Compute distances: [HW, N]
+    # For 64x64: HW=4096, N<=4096 → 16M elements, acceptable on GPU
+    dists = torch.cdist(all_pixel_coords, mask_coords.float())  # [HW, N]
+
+    k_use = min(top_k, N) if top_k is not None else N
+    if k_use == 0:
+        zero = torch.zeros_like(logits)
+        return zero, zero, zero, zero
+
+    # Top-k nearest (smallest distance)
+    topk_dists, topk_indices = torch.topk(dists, k_use, dim=1, largest=False)  # [HW, k_use]
+
+    # Gather logits values for top-k neighbors
+    topk_logits = mask_logits_vals[topk_indices]  # [HW, k_use]
+
+    # Determine if current pixel is in mask
+    # Build a lookup: pixel_idx -> is_in_mask and its index in mask_coords
+    pixel_idx_to_mask_idx = -torch.ones(HW, dtype=torch.long, device=device)
+    flat_mask_idx = mask_coords[:, 0] * W + mask_coords[:, 1]  # [N]
+    pixel_idx_to_mask_idx[flat_mask_idx] = torch.arange(N, device=device)
+
+    current_pixel_idx = torch.arange(HW, device=device)
+    self_in_mask = pixel_idx_to_mask_idx[current_pixel_idx] != -1  # [HW]
+    self_mask_idx = pixel_idx_to_mask_idx[current_pixel_idx]       # [HW], -1 if not in mask
+
+    # Expand for comparison
+    self_mask_idx_exp = self_mask_idx.unsqueeze(1).expand(-1, k_use)  # [HW, k_use]
+    topk_mask_indices = torch.arange(N, device=device)[topk_indices]   # [HW, k_use]
+    is_self = (topk_mask_indices == self_mask_idx_exp) & self_in_mask.unsqueeze(1)
+
+    # Compute weights (exponential decay)
+    d_max = topk_dists.max(dim=1, keepdim=True).values  # [HW, 1]
+    eps = 1e-8
+    sigma = d_max + eps
+    weights = torch.exp(-topk_dists / sigma)  # [HW, k_use]
+
+    # Mask out self for "without self" case
+    weights_wo = weights * (~is_self).float()
+    total_weight_wo = weights_wo.sum(dim=1, keepdim=True)  # [HW, 1]
+    safe_weight_wo = torch.where(total_weight_wo > 0, total_weight_wo, torch.ones_like(total_weight_wo))
+
+    # Mean without self
+    weighted_sum_wo = (weights_wo * topk_logits).sum(dim=1)  # [HW]
+    mean_wo = weighted_sum_wo / safe_weight_wo.squeeze(1)
+
+    # Variance without self
+    var_numerator_wo = (weights_wo * (topk_logits - mean_wo.unsqueeze(1)) ** 2).sum(dim=1)
+    var_wo = torch.where(total_weight_wo.squeeze(1) > 0, var_numerator_wo / safe_weight_wo.squeeze(1), 0.0)
+
+    # For "with self": add current pixel as a new neighbor
+    current_logit = logits_flat.unsqueeze(1)  # [HW, 1]
+    current_weight = total_weight_wo  # heuristic: use total weight as current weight
+    extended_logits = torch.cat([topk_logits, current_logit], dim=1)  # [HW, k_use+1]
+    extended_weights = torch.cat([weights_wo, current_weight], dim=1)  # [HW, k_use+1]
+
+    total_weight_w = extended_weights.sum(dim=1, keepdim=True)
+    safe_weight_w = torch.where(total_weight_w > 0, total_weight_w, torch.ones_like(total_weight_w))
+    mean_w = (extended_weights * extended_logits).sum(dim=1) / safe_weight_w.squeeze(1)
+    var_numerator_w = (extended_weights * (extended_logits - mean_w.unsqueeze(1)) ** 2).sum(dim=1)
+    var_w = torch.where(total_weight_w.squeeze(1) > 0, var_numerator_w / safe_weight_w.squeeze(1), 0.0)
+
+    # Reshape to [H, W]
+    mean_wo = mean_wo.view(H, W)
+    var_wo = var_wo.view(H, W)
+    mean_w = mean_w.view(H, W)
+    var_w = var_w.view(H, W)
+
+    return mean_wo, var_wo, mean_w, var_w
+
+def compute_weighted_mean_variance_fast(
+    logits: torch.Tensor,
+    mask: torch.Tensor,
+    dist_matrix: torch.Tensor,
+    coeff: float = 3.0
+):
+    """
+    Compute distance-weighted mean and variance for each pixel using ALL mask points.
+    
+    Args:
+        logits: (H, W)
+        mask: (H, W), binary
+        dist_matrix: (H*W, H*W), precomputed pairwise distances (flattened coordinates)
+    
+    Returns:
+        mean_wo, var_wo, mean_w, var_w: each (H, W)
+    """
+    assert logits.shape == mask.shape
+    H, W = logits.shape
+    HW = H * W
+    device = logits.device
+
+    logits_flat = logits.view(HW)               # (HW,)
+    mask_flat = mask.view(HW).bool()            # (HW,)
+    # dist_matrix = dist_matrix.to(device)  # (HW, HW)
+
+    mask_indices = torch.nonzero(mask_flat, as_tuple=False).squeeze(-1)  # (N,)
+    N = mask_indices.numel()
+
+    if N == 0:
+        zero = torch.zeros_like(logits)
+        return zero, zero, zero, zero
+
+    # Distances from all pixels to mask points
+    dists_to_mask = dist_matrix[:, mask_indices]  # (HW, N)
+    mask_logits_vals = logits_flat[mask_indices]  # (N,)
+
+    # Compute weights: exp(-d / (max_d + eps))
+    d_max = dists_to_mask.max(dim=1, keepdim=True).values  # (HW, 1)
+    eps = 1e-8
+    weights_full = torch.exp(- coeff * dists_to_mask / (d_max + eps))  # (HW, N)
+
+    # Identify if current pixel is in mask and appears in mask_indices
+    self_in_mask = mask_flat  # (HW,)
+    is_self = (mask_indices.unsqueeze(0) == torch.arange(HW, device=device).unsqueeze(1))  # (HW, N)
+    is_self_and_valid = is_self & self_in_mask.unsqueeze(1)  # (HW, N)
+
+    # --- Without self ---
+    weights_wo = weights_full * (~is_self_and_valid).float()  # (HW, N)
+
+    weight_sum_wo = weights_wo.sum(dim=1)  # (HW,)
+    has_valid_wo = weight_sum_wo > 0
+
+    # print(weights_wo[0]/weight_sum_wo[0])
+    # # print(weighted_sum_wo[0])
+    # a = input()
+
+    # Compute mean_wo safely
+    weighted_sum_wo = (weights_wo * mask_logits_vals.unsqueeze(0)).sum(dim=1)  # (HW,)
+    mean_wo = torch.zeros_like(weighted_sum_wo)
+    mean_wo[has_valid_wo] = weighted_sum_wo[has_valid_wo] / weight_sum_wo[has_valid_wo]
+
+    # Compute var_wo
+    var_wo = torch.zeros_like(weighted_sum_wo)
+    if has_valid_wo.any():
+        diff = mask_logits_vals.unsqueeze(0) - mean_wo.unsqueeze(1)  # (HW, N)
+        var_num = (weights_wo * (diff ** 2)).sum(dim=1)  # (HW,)
+        var_wo[has_valid_wo] = var_num[has_valid_wo] / weight_sum_wo[has_valid_wo]
+
+    # --- With self: add current pixel with weight = weight_sum_wo (or 1 if no neighbors) ---
+    current_logit = logits_flat  # (HW,)
+
+    # 自身权重设计：若周围无点，则 w_self = 1；否则 w_self = weight_sum_wo
+    # 这样保证至少有一个有效权重
+    weight_self = torch.where(has_valid_wo, weight_sum_wo, torch.ones_like(weight_sum_wo))  # (HW,)
+
+    # Total weight for "with self"
+    weight_sum_w = weight_sum_wo + weight_self  # (HW,)
+
+    # Mean_w = (W_wo * mean_wo + w_self * x_self) / (W_wo + w_self)
+    mean_w = (weight_sum_wo * mean_wo + weight_self * current_logit) / weight_sum_w
+
+    # Variance_w:
+    # Var = [W_wo*(var_wo + (mean_wo - mean_w)^2) + w_self*(0 + (x_self - mean_w)^2)] / (W_wo + w_self)
+    term1 = weight_sum_wo * (var_wo + (mean_wo - mean_w) ** 2)
+    term2 = weight_self * (current_logit - mean_w) ** 2
+    var_w = (term1 + term2) / weight_sum_w
+
+    # Reshape
+    return mean_wo.view(H, W), var_wo.view(H, W), mean_w.view(H, W), var_w.view(H, W)
+
+def compute_weighted_mean_variance_fast_v3(
+    logits: torch.Tensor,
+    mask: torch.Tensor,
+    dist_matrix: torch.Tensor,
+    top_k: int = 128,  # reasonable default
+    coeff: float = 1.0
+):
+    """
+    Efficient GPU implementation with top-k and precomputed distance matrix.
+    Assumes logits is top-left (H, W) of 64x64 image.
+    """
+    assert logits.shape == mask.shape
+    H, W = logits.shape
+    HW = H * W
+    device = logits.device
+
+    logits_flat = logits.view(HW)
+    mask_flat = mask.view(HW).bool()
+
+    mask_indices = torch.nonzero(mask_flat, as_tuple=False).squeeze(-1)
+    N = mask_indices.numel()
+
+    if N == 0:
+        zero = torch.zeros_like(logits)
+        return zero, zero, zero, zero
+
+    # Limit top_k to avoid OOM
+    k_use = min(top_k, N)
+
+    # --- Get top-k nearest mask points for each pixel ---
+    # dists: (HW, N)
+    dists_to_mask = dist_matrix[:, mask_indices]
+    topk_dists, topk_idx_in_mask = torch.topk(dists_to_mask, k_use, dim=1, largest=False)  # (HW, k_use)
+
+    # Gather logits of top-k points
+    topk_logits = logits_flat[mask_indices[topk_idx_in_mask]]  # (HW, k_use)
+
+    # --- Compute weights (exponential decay) ---
+    d_max = topk_dists.max(dim=1, keepdim=True).values  # (HW, 1)
+    eps = 1e-8
+    weights = torch.exp(-coeff * topk_dists / (d_max + eps))  # (HW, k_use)
+
+    # --- Identify if current pixel is in the top-k and in mask ---
+    # Global index of current pixel: 0,1,...,HW-1
+    current_global_idx = torch.arange(HW, device=device)  # (HW,)
+    # Global index of top-k mask points:
+    topk_global_idx = mask_indices[topk_idx_in_mask]  # (HW, k_use)
+    # Is current pixel in mask?
+    self_in_mask = mask_flat  # (HW,)
+    # Is current pixel among the top-k neighbors?
+    is_self_in_topk = (topk_global_idx == current_global_idx.unsqueeze(1))  # (HW, k_use)
+    # Only mask out if it's both in mask AND in top-k
+    should_mask_self = self_in_mask.unsqueeze(1) & is_self_in_topk  # (HW, k_use)
+
+    # --- Case 1: Without self ---
+    weights_wo = torch.where(should_mask_self, torch.zeros_like(weights), weights)
+    weight_sum_wo = weights_wo.sum(dim=1)  # (HW,)
+    has_valid_wo = weight_sum_wo > 0
+
+    # Compute mean_wo
+    weighted_sum_wo = (weights_wo * topk_logits).sum(dim=1)
+    mean_wo = torch.zeros_like(weighted_sum_wo)
+    mean_wo[has_valid_wo] = weighted_sum_wo[has_valid_wo] / weight_sum_wo[has_valid_wo]
+
+    # Compute var_wo
+    var_wo = torch.zeros_like(weighted_sum_wo)
+    if has_valid_wo.any():
+        diff = topk_logits - mean_wo.unsqueeze(1)
+        var_num = (weights_wo * (diff ** 2)).sum(dim=1)
+        var_wo[has_valid_wo] = var_num[has_valid_wo] / weight_sum_wo[has_valid_wo]
+
+    # --- Case 2: With self ---
+    current_logit = logits_flat
+    # Self weight: use total weight of neighbors (or 1 if none)
+    weight_self = torch.where(has_valid_wo, weight_sum_wo, torch.ones_like(weight_sum_wo))
+    weight_sum_w = weight_sum_wo + weight_self
+
+    mean_w = (weight_sum_wo * mean_wo + weight_self * current_logit) / weight_sum_w
+
+    # Incremental variance
+    term1 = weight_sum_wo * (var_wo + (mean_wo - mean_w) ** 2)
+    term2 = weight_self * (current_logit - mean_w) ** 2
+    var_w = (term1 + term2) / weight_sum_w
+
+    return (
+        mean_wo.view(H, W),
+        var_wo.view(H, W),
+        mean_w.view(H, W),
+        var_w.view(H, W)
+    )
 
 def keep_negative_by_top2_magnitude_levels_old(x, target_size):
     """
@@ -1324,7 +1628,7 @@ def keep_negative_by_top2_magnitude_levels_old(x, target_size):
 
     return out * final_keep_mask
 
-def keep_negative_by_top2_magnitude_levels(x, target_size):
+def keep_negative_by_top2_magnitude_levels_old2(x, target_size):
     """
     在 tensor 中，对负数部分：
     - 计算每个负数的十进制数量级（floor(log10(|x|))）
@@ -1352,7 +1656,7 @@ def keep_negative_by_top2_magnitude_levels(x, target_size):
 
     # --- 计算鲁棒最大值 ---
     if negative_mask.float().sum() / target_size > 2:
-        robust_max_idx = int(np.ceil(target_size * (1 - 0.8)))
+        robust_max_idx = torch.ceil(target_size * (1 - 0.8)).int()
         sorted_abs_vals = torch.sort(abs_vals.view(-1), descending=True).values
         robust_max = sorted_abs_vals[robust_max_idx] if robust_max_idx < len(sorted_abs_vals) else sorted_abs_vals[-1]
     else:
@@ -1372,7 +1676,7 @@ def keep_negative_by_top2_magnitude_levels(x, target_size):
     magnitudes = torch.floor(torch.log10(abs_vals)).to(torch.int)
 
     # --- 找出哪些负数属于 keep_levels ---
-    keep_negative = torch.isin(magnitudes, torch.tensor(list(keep_levels), dtype=magnitudes.dtype))
+    keep_negative = torch.isin(magnitudes, torch.tensor(list(keep_levels), dtype=magnitudes.dtype, device=magnitudes.device))
 
     # --- 映射回原 tensor 的索引 ---
     negative_indices = torch.nonzero(negative_mask, as_tuple=False).squeeze(1)
@@ -1391,6 +1695,46 @@ def keep_negative_by_top2_magnitude_levels(x, target_size):
     final_keep_mask |= (x >= 0)  # 注意：这里应该是 >=0，因为0也保留（原逻辑是>0，但0不是负数，也应该保留）
 
     return out * final_keep_mask
+
+def keep_negative_by_top2_magnitude_levels(x, target_size):
+    out = x.clone()
+    negative_mask = x < 0
+    if not negative_mask.any():
+        return out
+
+    negative_vals = x[negative_mask]
+    abs_vals = negative_vals.abs()
+
+    # --- 鲁棒最大值 ---
+    neg_count = negative_mask.sum().float()
+    if neg_count / target_size > 2:
+        robust_max_idx = torch.ceil(target_size * 0.2).long()
+        sorted_abs = torch.sort(abs_vals, descending=True).values
+        robust_max = sorted_abs[min(robust_max_idx, len(sorted_abs) - 1)]
+    else:
+        robust_max = torch.quantile(abs_vals, 0.9)
+
+    abs_vals = torch.clamp_max(abs_vals, robust_max)
+
+    # --- 计算数量级（保持为张量）---
+    log10_abs = torch.log10(abs_vals + 1e-12)  # 防止 log(0)
+    magnitudes = torch.floor(log10_abs).long()  # [M]
+
+    # --- 计算 level_max（张量）---
+    level_max = torch.floor(torch.log10(robust_max + 1e-12)).long()
+
+    # --- 构建保留掩码（向量化）---
+    keep_mask_mag = (magnitudes == level_max) | (magnitudes == level_max - 1)
+
+    # --- 映射回原图 ---
+    final_keep = torch.zeros_like(x, dtype=torch.bool)
+    neg_indices = torch.nonzero(negative_mask, as_tuple=False)  # [M, 2]
+    if keep_mask_mag.any():
+        keep_indices = neg_indices[keep_mask_mag]
+        final_keep[keep_indices[:, 0], keep_indices[:, 1]] = True
+
+    final_keep |= (x >= 0)
+    return out * final_keep
 
 def smooth_optim(logits, pos_bias=0.5):
     H, W = logits.shape
@@ -1425,7 +1769,6 @@ def smooth_optim(logits, pos_bias=0.5):
     a = input()
 
     return new_logits
-
 
 def add_uniform_points_cuda(mask, seed, num1, part_ratio=1, logits=None, chunk_size=2048):
     """
@@ -1529,7 +1872,7 @@ def add_uniform_points_cuda(mask, seed, num1, part_ratio=1, logits=None, chunk_s
 
     return updated_seed
 
-def add_uniform_points_grid_cuda(mask, seed, num, jitter=True):
+def add_uniform_points_grid_cuda_v1(mask, seed, num, jitter=True):
     """
     Add 'num' uniformly distributed points inside mask, avoiding seed,
     using jittered grid + farthest selection (GPU optimized).
@@ -1568,22 +1911,26 @@ def add_uniform_points_grid_cuda(mask, seed, num, jitter=True):
     gy = torch.linspace(0, H - 1e-5, n_side + 1, device=device)  # Avoid edge issues
     gx = torch.linspace(0, W - 1e-5, n_side + 1, device=device)
 
-    candidates = []
-    for i in range(n_side):
-        for j in range(n_side):
-            y0, y1 = gy[i], gy[i+1]
-            x0, x1 = gx[j], gx[j+1]
-            if jitter:
-                dy = torch.rand(1, device=device) * (y1 - y0)
-                dx = torch.rand(1, device=device) * (x1 - x0)
-                y = y0 + dy
-                x = x0 + dx
-            else:
-                y = (y0 + y1) / 2
-                x = (x0 + x1) / 2
-            candidates.append([y, x])
+    # 替换整个 grid 生成部分
+    gy = torch.linspace(0, H - 1e-5, n_side + 1, device=device)
+    gx = torch.linspace(0, W - 1e-5, n_side + 1, device=device)
 
-    candidates = torch.tensor(candidates, device=device, dtype=torch.float32)  # [K, 2]
+    # 生成网格坐标 (n_side, n_side)
+    gy_mid = (gy[:-1] + gy[1:]) / 2  # [n_side]
+    gx_mid = (gx[:-1] + gx[1:]) / 2  # [n_side]
+
+    # meshgrid
+    Y, X = torch.meshgrid(gy_mid, gx_mid, indexing='ij')  # [n_side, n_side]
+    candidates_y = Y.flatten()  # [K]
+    candidates_x = X.flatten()  # [K]
+
+    if jitter:
+        dy = torch.rand_like(candidates_y) * (gy[1] - gy[0])
+        dx = torch.rand_like(candidates_x) * (gx[1] - gx[0])
+        candidates_y += dy
+        candidates_x += dx
+
+    candidates = torch.stack([candidates_y, candidates_x], dim=1)  # [K, 2]
     K = candidates.shape[0]
 
     # Convert to integer coordinates for indexing
@@ -1657,6 +2004,232 @@ def add_uniform_points_grid_cuda(mask, seed, num, jitter=True):
     ys = ys[valid_update]
     xs = xs[valid_update]
     new_seed[ys, xs] = True
+
+    return new_seed
+
+def add_uniform_points_grid_cuda(mask, seed, num, min_dist_ratio=0.5):
+    """
+    add_uniform_points_nms
+    Add 'num' approximately uniformly distributed points in mask (excluding seed)
+    using random sampling + distance-based Non-Maximum Suppression (NMS).
+    
+    This approximates Poisson disk sampling by ensuring selected points are not too close.
+    
+    Args:
+        mask (torch.Tensor): [H, W], bool, valid region
+        seed (torch.Tensor): [H, W], bool, existing points
+        num (int): number of new points to add
+        min_dist_ratio (float): controls min distance as ratio of avg grid spacing.
+                                Smaller -> denser; larger -> sparser.
+                                Typical: 0.3 ~ 0.7.
+
+    Returns:
+        torch.Tensor: updated seed map [H, W], bool
+    """
+    if num <= 0:
+        return seed.clone()
+    
+    mask = mask.bool()
+    seed = seed.bool()
+    H, W = mask.shape
+    device = mask.device
+
+    candidate_mask = mask & (~seed)
+    candidate_coords = torch.nonzero(candidate_mask, as_tuple=False).float()  # [M, 2]
+    M = candidate_coords.shape[0]
+
+    if M == 0:
+        return seed.clone()
+    
+    # If not enough candidates, take all
+    if M <= num:
+        selected = candidate_coords
+    else:
+        # Step 1: Oversample candidates (e.g., 3x~5x)
+        oversample = min(5 * num, M)
+        idx = torch.randperm(M, device=device)[:oversample]
+        candidates = candidate_coords[idx]  # [K, 2], K = oversample
+        
+        # Step 2: Estimate a reasonable min distance
+        # Approximate average spacing if points were uniform over mask area
+        mask_area = mask.sum().float()
+        if mask_area > 0:
+            avg_spacing = (mask_area ** 0.5) / (num ** 0.5 + 1e-6)
+        else:
+            avg_spacing = min(H, W) * 0.1
+        min_dist = min_dist_ratio * avg_spacing
+
+        # Step 3: Distance-based NMS
+        # Start with all candidates as potential
+        keep = torch.ones(candidates.shape[0], dtype=torch.bool, device=device)
+        selected = []
+
+        # Compute pairwise distances once (K can be ~500, so K^2 is acceptable)
+        dists = torch.cdist(candidates, candidates)  # [K, K]
+
+        # Greedily select: pick highest-score (here, all equal) and suppress neighbors
+        # Since no score, we just iterate in order (or shuffle for randomness)
+        order = torch.randperm(candidates.shape[0], device=device)
+        for i in order:
+            if not keep[i]:
+                continue
+            selected.append(candidates[i:i+1])
+            if len(selected) >= num:
+                break
+            # Suppress all points within min_dist
+            too_close = dists[i] < min_dist
+            keep = keep & (~too_close)
+
+        if selected:
+            selected = torch.cat(selected, dim=0)
+        else:
+            # Fallback: just take first 'num'
+            selected = candidates[:num]
+
+    # Update seed map
+    new_seed = seed.clone()
+    ys = selected[:, 0].long()
+    xs = selected[:, 1].long()
+    valid = (ys >= 0) & (ys < H) & (xs >= 0) & (xs < W)
+    new_seed[ys[valid], xs[valid]] = True
+    return new_seed
+
+def add_uniform_points_with_logits(mask, seed, logits, num, alpha=0.6, jitter=True):
+    """
+    Add 'num' points in mask region using adaptive grid based on mask area.
+    Generates ~2*num candidates to handle irregular shapes, then selects top-num by score.
+
+    Args:
+        mask (torch.Tensor): [H, W], bool
+        seed (torch.Tensor): [H, W], bool
+        logits (torch.Tensor): [H, W], float
+        num (int): number of points to add
+        alpha (float): weight for spatial uniformity (0~1)
+        jitter (bool): whether to add random jitter within each cell
+
+    Returns:
+        torch.Tensor: updated seed map
+    """
+    device = mask.device
+    H, W = mask.shape
+
+    assert mask.shape == seed.shape == logits.shape
+    assert 0 <= alpha <= 1
+    if num <= 0:
+        return seed.clone()
+
+    # -------------------------------
+    # Step 0: Prepare candidate area
+    # -------------------------------
+    mask = mask.bool()
+    seed = seed.bool()
+    candidate_mask = mask & (~seed)
+
+    if not candidate_mask.any():
+        return seed.clone()
+
+    # -------------------------------
+    # Step 1: Compute adaptive grid cell size from mask area
+    # -------------------------------
+    area = mask.sum().float().item()
+    if area < 1e-3:
+        num = torch.ceil(area).int()
+
+    # Estimate ideal cell size: sqrt(area / num)
+    cell_size = (area / num) ** 0.5
+    cell_size = max(1.0, cell_size)  # At least 1x1
+
+    # Number of cells in H and W direction
+    nx = int(W / cell_size) + 2
+    ny = int(H / cell_size) + 2
+
+    # Grid boundaries
+    x_edges = torch.linspace(0, W, nx + 1, device=device)
+    y_edges = torch.linspace(0, H, ny + 1, device=device)
+
+    candidates = []
+
+    # 替换原来的 for 循环
+    y_centers = (y_edges[:-1] + y_edges[1:]) / 2  # [ny]
+    x_centers = (x_edges[:-1] + x_edges[1:]) / 2  # [nx]
+
+    if jitter:
+        y_jitter = (torch.rand_like(y_centers) * cell_size)
+        x_jitter = (torch.rand_like(x_centers) * cell_size)
+        y_centers = y_centers + y_jitter
+        x_centers = x_centers + x_jitter
+
+    # 扩展为网格点
+    yy, xx = torch.meshgrid(y_centers, x_centers, indexing='ij')  # [ny, nx]
+    candidates = torch.stack([yy.flatten(), xx.flatten()], dim=1)  # [K, 2]
+
+    # Filter valid indices
+    cand_int = candidates.long()  # [K, 2] (y, x)
+    valid_pos = (cand_int[:, 0] < H) & (cand_int[:, 1] < W) & (cand_int[:, 0] >= 0) & (cand_int[:, 1] >= 0)
+    candidates = candidates[valid_pos]
+    cand_int = cand_int[valid_pos]
+
+    # Further filter: must be in candidate_mask
+    ys, xs = cand_int[:, 0], cand_int[:, 1]
+    in_candidate = candidate_mask[ys, xs]
+    candidates = candidates[in_candidate]
+    cand_int = cand_int[in_candidate]
+    logits_vals = logits[ys, xs][in_candidate]
+
+    if candidates.shape[0] == 0:
+        return seed.clone()
+
+    # -------------------------------
+    # Step 2: Oversample strategy — keep up to 2*num candidates
+    # -------------------------------
+    K = candidates.shape[0]
+    target_keep = min(K, 2 * num)  # Aim for ~2*num
+
+    # Optional: sort by spatial spread or logits before truncating?
+    # We'll keep them as-is (random order due to grid), then re-rank by score later
+
+    if K > target_keep:
+        # Randomly subsample to avoid OOM in distance computation
+        perm = torch.randperm(K, device=device)[:target_keep]
+        candidates = candidates[perm]
+        cand_int = cand_int[perm]
+        logits_vals = logits_vals[perm]
+
+    # -------------------------------
+    # Step 3: Compute combined score
+    # -------------------------------
+    scores = torch.zeros(candidates.shape[0], device=device, dtype=torch.float32)
+
+    # Term 1: Distance to nearest existing seed (if any)
+    has_existing = seed.any()
+    if has_existing and alpha > 0.0:
+        existing_points = torch.nonzero(seed, as_tuple=False).float()
+        dists = torch.cdist(candidates, existing_points)
+        min_dists = dists.min(dim=1).values
+        max_dist = min_dists.max() + 1e-8
+        norm_dist = min_dists / max_dist
+        scores += alpha * norm_dist
+
+    # Term 2: Logits importance
+    logit_score = torch.sigmoid(logits_vals)  # Normalize to [0,1]
+    scores += (1 - alpha) * logit_score
+
+    # -------------------------------
+    # Step 4: Select top-`num` points
+    # -------------------------------
+    k_select = min(num, scores.shape[0])
+    _, idx_selected = torch.topk(scores, k=k_select, largest=True)
+    final_cand_int = cand_int[idx_selected]
+
+    # -------------------------------
+    # Step 5: Update seed map
+    # -------------------------------
+    new_seed = seed.clone()
+    ys_new, xs_new = final_cand_int[:, 0], final_cand_int[:, 1]
+    valid_update = (ys_new < H) & (xs_new < W) & (ys_new >= 0) & (xs_new >= 0)
+    ys_new = ys_new[valid_update]
+    xs_new = xs_new[valid_update]
+    new_seed[ys_new, xs_new] = True
 
     return new_seed
 

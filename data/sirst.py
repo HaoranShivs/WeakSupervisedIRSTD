@@ -310,6 +310,82 @@ class MDFADataset(Data.Dataset):
         return len(self.names)
 
 
+class SIRSTDataset(Data.Dataset):
+    '''
+    Return: Single channel
+    '''
+    def __init__(
+        self,
+        base_dir=r"W:/DataSets/Infraid_datasets/SIRST",
+        mode="train",
+        base_size=256,
+        pt_label=False,
+        offset = 0,
+        pseudo_label=False,
+        preded_label=False,
+        augment=True,
+        turn_num='',
+        target_mix = False,
+        file_name = '',
+    ):
+        assert mode in ["train", "test"]
+
+        if mode == "train":
+            self.data_dir = osp.join(base_dir, "trainval")
+        elif mode == "test":
+            self.data_dir = osp.join(base_dir, "test")
+        else:
+            raise NotImplementedError
+        self.mode = mode 
+        self.base_size = base_size
+        self.pt_label = pt_label
+        self.offset = offset
+        self.pesudo_label = pseudo_label
+        self.preded_label = preded_label
+        self.aug = augment
+        self.turn_num = turn_num
+        self.target_mix = target_mix
+        self.names = []
+        for filename in os.listdir(osp.join(self.data_dir, 'images' + file_name)):
+            if filename.endswith('png'):
+                self.names.append(filename)
+
+        self.aug_transformer = Augment_transform(base_size, mode) if augment else Augment_transform(base_size, "test")
+
+    def __getitem__(self, i):
+        name = self.names[i]
+        img_path = osp.join(self.data_dir, "images", name)
+        pesudo_label_path = osp.join(self.data_dir, f'pixel_pseudo_label{self.turn_num}', name)
+        preded_label_path = osp.join(self.data_dir, f'preded_label/{self.turn_num}', name)
+        label_path = osp.join(self.data_dir, "masks", name)
+
+        img, mask= cv2.imread(img_path, 0), cv2.imread(label_path, 0)
+        img, mask= torch.from_numpy(img).unsqueeze(0).float(), torch.from_numpy(mask).unsqueeze(0).float()
+        
+        if self.pesudo_label:
+            pesudo_label = cv2.imread(pesudo_label_path, 0)
+            pesudo_label = torch.from_numpy(pesudo_label).unsqueeze(0).float()
+            pesudo_label = transforms.functional.resize(pesudo_label, (mask.shape[-2], mask.shape[-1]))
+            mask = torch.cat([mask, pesudo_label], dim=0)
+        if self.preded_label:
+            preded_label = cv2.imread(preded_label_path, 0)
+            preded_label = torch.from_numpy(preded_label).unsqueeze(0).float()
+            mask = torch.cat([mask, preded_label], dim=0)
+        
+        img, mask = self.aug_transformer(img, mask)
+
+        img, mask = img / 255.0, mask / 255.0
+
+        if self.pt_label:
+            pt_label = mask2point(mask[0].unsqueeze(0), img, self.offset)
+            mask[0] = pt_label
+
+        return img, mask
+    
+    def __len__(self):
+        return len(self.names)
+
+
 def __organize_dataset(training_dir, target_base_path):
     """
     整理数据集：将 training_dir 中以 _1 结尾的文件作为 image，以 _2 结尾的文件作为 mask，分别复制到 target_base_path/image 和 target_base_path/mask。
