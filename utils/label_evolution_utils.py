@@ -187,7 +187,17 @@ def proper_region(pred, c1, c2, extend_factor=0.5, initial_size=64, mini_size=6)
         boundary = center + direction * half_search
         for i in range(min_step, half_search + 1):
             pos = center + direction * i
-            val = torch.sum(pred_padded[pos, other_slice]) if axis == 0 else torch.sum(pred_padded[other_slice, pos])
+
+            if axis == 0:  # 搜索行（上下），检查 pos 行及其上下一行（共3行）
+                # 确保不越界（虽然 padded 了，但保险起见）
+                start_row = max(0, pos - 1)
+                end_row = min(pred_padded.shape[0], pos + 2)  # +2 because slice is [start, end)
+                val = torch.sum(pred_padded[start_row:end_row, other_slice])
+            else:  # axis == 1, 搜索列（左右），检查 pos 列及其左右一列（共3列）
+                start_col = max(0, pos - 1)
+                end_col = min(pred_padded.shape[1], pos + 2)
+                val = torch.sum(pred_padded[other_slice, start_col:end_col])
+
             if val < 1.0:
                 boundary = center + direction * (i - 1)
                 break

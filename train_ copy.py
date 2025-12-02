@@ -300,7 +300,7 @@ class Trainer(object):
             
             labels = (labels > self.cfg["label_vague_threshold"]).type(torch.float32)
             self.metric.update(labels, out_T)
-            self.eval_my_PD_FA.update(labels, out_T)
+            self.eval_my_PD_FA.update(out_T, labels)
         miou_all, prec_all, recall_all, fmeasure_all = self.metric.get()
         PD, FA = self.eval_my_PD_FA.get()
 

@@ -83,6 +83,8 @@ def parse_args():
 
     parser.add_argument("--last-turnnum", type=str, default="0", help="Last turn_num of pseudo label")
 
+    parser.add_argument("--plthre", type=float, default=0.3, help="the threshold of pseudo label")
+
     args = parser.parse_args()
 
     return args
@@ -98,7 +100,52 @@ def gradient_expand_one_size(
     img_gradient_2 = img_gradient3(region_)  # 3*3 sober
     img_gradient_3 = img_gradient5(region_)  # 5*5 sobel
 
-    # # 梯度映射，突出中灰度的区分度
+    # # 
+    # def compute_histogram(tensor):
+    #     """
+    #     对输入 tensor 进行 (0,1) 归一化，然后乘以 255，
+    #     统计结果落在 [0,1), [1,2), ..., [255,256) 区间内的元素个数，
+    #     返回形状为 (256,) 的整型 tensor。
+
+    #     参数:
+    #         tensor (torch.Tensor): 输入张量，可以是任意形状。
+
+    #     返回:
+    #         torch.Tensor: 形状为 (256,) 的 LongTensor，表示每个区间的计数。
+    #     """
+    #     # 展平张量以便处理
+    #     flattened = tensor.flatten().float()
+
+    #     # 归一化到 (0, 1)
+    #     min_val = flattened.min()
+    #     max_val = flattened.max()
+        
+    #     # 避免除以零（当所有值相等时）
+    #     if max_val == min_val:
+    #         normalized = torch.zeros_like(flattened)
+    #     else:
+    #         normalized = (flattened - min_val) / (max_val - min_val)
+
+    #     # 映射到 [0, 255]
+    #     scaled = normalized * 255.0
+
+    #     # 将值限制在 [0, 255.999...] 范围内（防止因浮点误差导致 bin 越界）
+    #     scaled = torch.clamp(scaled, 0, 255.999)
+
+    #     # 转换为长整型索引（自动向下取整，等价于 floor，对应区间 [i, i+1)）
+    #     indices = scaled.long()
+
+    #     # 使用 bincount 统计每个 bin 的数量，bins=256
+    #     histogram = torch.bincount(indices, minlength=256)
+
+    #     return histogram
+    
+    # global global_hist, hist_cnt, global_hist2
+    # global_hist = compute_histogram(img_gradient_1) + compute_histogram(img_gradient_2) + \
+    #       compute_histogram(img_gradient_3) + global_hist
+    # hist_cnt += 3
+
+    # 梯度映射，突出中灰度的区分度
     min_value1, max_value1 = robust_min_max(img_gradient_1, 0.01, 0.05)
     min_value2, max_value2 = robust_min_max(img_gradient_2, 0.01, 0.05)
     min_value3, max_value3 = robust_min_max(img_gradient_3, 0.01, 0.05)
@@ -113,6 +160,13 @@ def gradient_expand_one_size(
         sigmoid_mapping2(img_gradient_2, 10, 1),
         sigmoid_mapping2(img_gradient_3, 10, 1),
     )
+
+    # global_hist2 = compute_histogram(img_gradient_1) + compute_histogram(img_gradient_2) + \
+    #       compute_histogram(img_gradient_3) + global_hist2
+
+    # img_gradient_1 = (img_gradient_1 - img_gradient_1.min()) / (img_gradient_1.max() - img_gradient_1.min() + 1e-11)
+    # img_gradient_2 = (img_gradient_2 - img_gradient_2.min()) / (img_gradient_2.max() - img_gradient_2.min() + 1e-11)
+    # img_gradient_3 = (img_gradient_3 - img_gradient_3.min()) / (img_gradient_3.max() - img_gradient_3.min() + 1e-11)
 
     # 多尺度融合
     img_gradient_ = (
@@ -167,6 +221,114 @@ def gradient_expand_one_size(
     # if view:
     #     return _target, (img_gradient_1, img_gradient_2, img_gradient_3, img_gradient_4, grad_mask, grad_boundary, expanded_grad)
     return _target, ()
+
+# def sobel_8_directions_gray(input_tensor):
+#     """
+#     Apply 8-directional Sobel filters to a grayscale image tensor.
+
+#     Args:
+#         input_tensor (torch.Tensor): Input grayscale tensor of shape (B, 1, H, W)
+
+#     Returns:
+#         responses (torch.Tensor): Shape (B, 8, H, W), response for each of the 8 directions.
+#         max_response (torch.Tensor): Shape (B, 1, H, W), pixel-wise maximum across directions.
+#     """
+#     assert input_tensor.ndim == 4 and input_tensor.shape[1] == 1, \
+#         "Input must be grayscale with shape (B, 1, H, W)"
+    
+#     device = input_tensor.device
+#     dtype = input_tensor.dtype
+
+#     # Define 8 directional Sobel kernels, shape: (8, 1, 3, 3)
+#     kernels = torch.tensor([
+#         [[[1, 2, 1],
+#           [0, 0, 0],
+#           [-1, -2, -1]]],  # 0° 
+
+#          [[[0, 1, 2],
+#           [-1, 0, 1],
+#           [-2, -1, 0]]],  # 45°
+
+#         [[[-1, 0, 1],
+#           [-2, 0, 2],
+#           [-1, 0, 1]]],  # 90°
+
+#         [[[-2, -1, 0],
+#           [-1, 0, 1],
+#           [0, 1, 2]]],   # 135
+
+#         [[[-1, -2, -1],
+#           [0, 0, 0],
+#           [1, 2, 1]]],  # 180  
+
+#         [[[0, -1, -2],
+#           [1, 0, -1],
+#           [2, 1, 0]]],  # 225° 
+
+#         [[[1, 0, -1],
+#           [2, 0, -2],
+#           [1, 0, -1]]],  # 270 (West)
+
+#         [[[2, 1, 0],
+#           [1, 0, -1],
+#           [0, -1, -2]]],  # 315° (Southwest)
+#     ], dtype=dtype, device=device)
+
+#     # Apply convolution: out_channels=8, in_channels=1
+#     responses = F.conv2d(input_tensor, kernels, padding=1)
+
+#     zeros_tensor = torch.zeros_like(responses)
+#     grad = torch.where(responses > 0, responses, zeros_tensor)
+
+#     return grad
+
+# def gradient_expand_one_size_sobel(
+#     region, scale_weight=[0.5, 0.5, 0.5], dilated_mask=None, eroded_mask=None, alpha=0.5, beta=0.5, view=False
+# ):
+#     # 归一化区域像素，以形成更强烈的边缘
+#     region_ = (region - region.min()) / (region.max() - region.min())
+
+#     img_gradient_ = sobel_8_directions_gray(region_)
+
+#     # 梯度映射，突出中灰度的区分度
+#     min_value, max_value = robust_min_max(img_gradient_, 0.01, 0.05)
+#     img_gradient_ = (img_gradient_ - min_value) / (max_value - min_value + 1e-11)
+#     img_gradient_ = sigmoid_mapping2(img_gradient_, 10, 1)
+
+#     grad_mask = local_max_gradient(torch.repeat_interleave(img_gradient_, repeats=3, dim=1))
+#     grad_mask_ = grad_mask[:,::3]
+
+#     # 用单像素宽度的梯度替代模糊边缘的宽的梯度
+#     img_gradient_4 = grad_mask_ * img_gradient_
+
+#     # 扩展梯度
+#     grad_boundary = boundary4gradient_expand(img_gradient_4, 1e20)
+#     expanded_grad = img_gradient_4
+#     region_size = region.shape[2] if region.shape[2] > region.shape[3] else region.shape[3]
+#     for z in range(region_size):
+#         expanded_grad_ = gradient_expand_one_step(expanded_grad)
+#         expanded_grad_ += grad_boundary
+#         expanded_grad_ = torch.where(expanded_grad > expanded_grad_, expanded_grad, expanded_grad_) * (
+#             expanded_grad_ > -1e-4
+#         )
+#         expanded_grad = expanded_grad_
+
+#     _target = torch.mean(expanded_grad[0], dim=0)
+#     _target = (_target - _target.min()) / (_target.max() - _target.min())
+
+#     # # 显示结果
+#     # angle_idx = 3
+#     # grad_boundary_4show = torch.cat((-grad_boundary[:,angle_idx]*1e-20, torch.zeros_like(grad_boundary[:,angle_idx]), torch.zeros_like(grad_boundary[:,angle_idx])), dim=0)
+#     # plt.figure(figsize=(25, 5))
+#     # plt.subplot(151), plt.imshow(region_[0,0], cmap='gray')
+#     # plt.subplot(152), plt.imshow(img_gradient_4[0,5], cmap='gray')
+#     # plt.subplot(153), plt.imshow(grad_boundary[0,1], cmap='gray')
+#     # plt.subplot(154), plt.imshow(expanded_grad[0,1], cmap='gray')
+#     # plt.subplot(155), plt.imshow(_target, cmap='gray')
+#     # plt.show()
+#     # if view:
+#     #     return _target, (img_gradient_1, img_gradient_2, img_gradient_3, img_gradient_4, grad_mask, grad_boundary, expanded_grad)
+#     return _target, ()
 
 
 def target_adanptive_filtering(target, img=None, pred=None, view=False):
@@ -718,31 +880,13 @@ def gradient_expand_filter_v2(img, pt_label, region_size, view=False):
 
         final_target, scores, coors = finalize_target(targets, view)
 
-        # fig = plt.figure(figsize=(15, 5))
-        # plt.subplot(1, 3, 1)
-        # plt.imshow(final_target, cmap='gray', vmax=1.0, vmin=0.0)
-        # plt.subplot(1, 3, 2)
-        # plt.imshow(final_target, cmap='gray', vmax=0.1, vmin=0.0)
-        # plt.subplot(1, 3, 3)
-        # plt.imshow(img[b,0, coors[0]:coors[2], coors[1]:coors[3]], cmap='gray', vmax=1.0, vmin=0.0)
-        # plt.show()
-
-        # target_filtered__, conf = RW.generate_pseudo_labels(final_target, {'ori_img': img[b,0, coors[0]:coors[2], coors[1]:coors[3]].unsqueeze(-1)})
-        
-        # with profile(
-        #     activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-        #     record_shapes=True,
-        #     profile_memory=True,
-        #     with_stack=True
-        # ) as prof:
-        #     # 你的代码
-        #     target_filtered__ = initial_target(final_target, fg_thre=0.5, bg_thre=0.1)
-
-        # # 直接保存为 JSON
-        # prof.export_chrome_trace("trace.json")
-        # a = input("over")
-
-        target_filtered__ = initial_target(final_target, fg_thre=0.5, bg_thre=0.1)
+        # target_filtered__ = initial_target(final_target, fg_thre=0.5, bg_thre=0.1)
+        # otsu_thre, _ = otsu_threshold(final_target * 255)
+        # target_filtered__ = final_target * 255 > otsu_thre
+        target_filtered__ = region_growing_priority_dynamic(final_target.numpy(), 
+                                                            (final_target > 0.5).numpy(), 
+                                                            (final_target < 0.05).numpy(), )
+        target_filtered__ = torch.tensor(target_filtered__)
         target_filtered_by_points = filter_mask_by_points(
             target_filtered__, pt_label[b, 0, coors[0] : coors[2], coors[1] : coors[3]]
         )  # (uint8)
@@ -765,25 +909,6 @@ def gradient_expand_filter_v2(img, pt_label, region_size, view=False):
         # plt.subplot(132), plt.imshow(final_target, cmap='gray', vmax=1., vmin=0.)
         # plt.subplot(133), plt.imshow(target_refined, cmap='gray', vmax=1., vmin=0.)
         # plt.show()
-        # if view:
-        #     # 绘制直方图
-        #     fig = plt.figure(figsize=(15, 5))
-
-        #     # 原始图像
-        #     plt.subplot(1, 3, 1)
-        #     plt.imshow(final_target, cmap='gray')
-
-        #     # 直方图
-        #     plt.subplot(1, 3, 2)
-        #     plt.imshow(target_filtered__, cmap='gray')
-        #     # plt.title('Filtered Image')
-
-        #     # 过滤后的图像
-        #     plt.subplot(1, 3, 3)
-        #     plt.imshow(target_filtered_by_points, cmap='gray')
-        #     plt.title('Filtered Image')
-
-        #     plt.show()
 
         # process_data_view(img[b], _region[0,0], final_target, grad_expand_process_data, target_filtered_, scores, target_filtered, treshold_filter_process_data, target_refined, output[b,0])
     return output
@@ -1019,13 +1144,14 @@ def label_evolution(image, pt_label, pesudo_label, pred, preded_label=None, view
     return output
 
 
-def label_evolution_v3(image, pt_label, pesudo_label, pred, pred_thre=0.01, new_pseudo_thre=0.01, mix_a=0.5, mix_b=0.5):
+def label_evolution_v3(image, pt_label, pesudo_label, pred, pred_thre=0.01, new_pseudo_thre=0.01, mix_a=0.5, mix_b=0.5, plthre=0.1):
     # 点标签坐标
     indices = torch.where(pt_label > 1e-4)
     output = torch.zeros_like(image, dtype=torch.float32)
     alpha, beta = 0.9, 0.9
     pred_pick_thre = pred_thre
     new_pseudo_pick_thre = new_pseudo_thre
+
     for b, _, c1, c2 in zip(*indices):
         if pred[b, 0, c1, c2] > 0.5:
             coors = proper_region(pred[b, 0], c1, c2, 1.0)
@@ -1034,16 +1160,19 @@ def label_evolution_v3(image, pt_label, pesudo_label, pred, pred_thre=0.01, new_
             coors = proper_region(pesudo_label[b, 0], c1, c2)
             d1, d2 = 2, 3
         region = image[b : b + 1, :, coors[0] : coors[1], coors[2] : coors[3]]
+        pred_region = pred[b, 0, coors[0] : coors[1], coors[2] : coors[3]]
 
         # 消除pred中，和pesudo_label不连通的小像素块
-        pred_region = filter_mask_by_points(
-            pred[b, 0, coors[0] : coors[1], coors[2] : coors[3]],
-            pesudo_label[b, 0, coors[0] : coors[1], coors[2] : coors[3]],
-            kernel_size=1,
-        )
+        # pixel_scope = max(coors[1] - coors[0], coors[3] - coors[2])
+        # kernel_size = int(pixel_scope // 4) 
+        # odd_kernel_size = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
+        pred_region_ = filter_mask_by_points(pred[b, 0, coors[0] : coors[1], coors[2] : coors[3]]>0.5,
+            pesudo_label[b, 0, coors[0] : coors[1], coors[2] : coors[3]]>0.5,
+            kernel_size=1)
 
         advice_region = examine_iou(
-            pred_region, pesudo_label[b, 0, coors[0] : coors[1], coors[2] : coors[3]], iou_treshold=pred_pick_thre
+            pred_region_>0.5,
+            pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]]>0.5, iou_treshold=pred_pick_thre
         )
 
         final_target = torch.zeros_like(pesudo_label[b, 0, coors[0] : coors[1], coors[2] : coors[3]])
@@ -1056,8 +1185,7 @@ def label_evolution_v3(image, pt_label, pesudo_label, pred, pred_thre=0.01, new_
             target_, _ = gradient_expand_one_size(region, [0.75, 0.5, 0.25], advice_dilated, advice_eroded, alpha, beta)
 
             final_target_ = evolve_target(
-                target_, advice_region, region[0, 0],
-                pesudo_label[b, 0, coors[0] : coors[1], coors[2] : coors[3]],
+                target_, advice_region,
                 alpha, beta,
             )
 
@@ -1069,25 +1197,30 @@ def label_evolution_v3(image, pt_label, pesudo_label, pred, pred_thre=0.01, new_
                 pesudo_label[b, 0, coors[0] : coors[1], coors[2] : coors[3]],
                 iou_treshold=new_pseudo_pick_thre,
             )
+
         if final_target.sum() < 4:
             final_target = dilate_mask(pt_label[b, 0, coors[0] : coors[1], coors[2] : coors[3]], 1)
         # 混合
         final_target = pred_region * mix_a + final_target * (1 - mix_a) if pred_region.sum() > 1 else final_target
-        final_target = pesudo_label[b, 0, coors[0] : coors[1], coors[2] : coors[3]] * mix_b + final_target * (1 - mix_b)
+        # final_target = pesudo_label[b, 0, coors[0] : coors[1], coors[2] : coors[3]] * mix_b + final_target * (1 - mix_b)
         # 保存结果
         output[b, 0, coors[0] : coors[1], coors[2] : coors[3]] = torch.max(
             output[b, 0, coors[0] : coors[1], coors[2] : coors[3]], final_target
         )
-        # # 显示结果
-        # plt.figure(figsize=(30, 6))
-        # plt.subplot(151), plt.imshow(region[0,0], cmap='gray')
-        # plt.subplot(152), plt.imshow(target_, cmap='gray', vmax=1., vmin=0.)
-        # plt.subplot(153), plt.imshow(final_target, cmap='gray', vmax=1., vmin=0.)
-        # plt.subplot(154), plt.imshow(pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
-        # plt.subplot(155), plt.imshow(pred_region, cmap='gray', vmax=1., vmin=0.)
-        # plt.show()
 
-    return output
+        # 显示结果
+        plt.figure(figsize=(30, 6))
+        plt.subplot(151), plt.imshow(region[0,0], cmap='gray')
+        plt.subplot(152), plt.imshow(target_, cmap='gray', vmax=1., vmin=0.)
+        plt.subplot(153), plt.imshow(output[b, 0, coors[0] : coors[1], coors[2] : coors[3]] > 0.3, cmap='gray', vmax=1., vmin=0.)
+        plt.subplot(154), plt.imshow(pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
+        plt.subplot(155), plt.imshow(pred[b, 0, coors[0] : coors[1], coors[2] : coors[3]], cmap='gray', vmax=1., vmin=0.)
+        plt.show()
+
+    output = output * mix_b + pesudo_label * (1-mix_b)
+    output_ = (output > plthre).float()
+
+    return output_, output
 
 
 def process_data_view(
@@ -1336,10 +1469,13 @@ def main(args):
 
     names = os.listdir(img_path)
     save_path = img_path + "/../" + "pixel_pseudo_label" + f"{args.save_folder}"
+    save_path_2 = img_path + "/../" + "pixel_pseudo_label" + f"{args.save_folder}_"
 
     # Save folders
     if not os.path.exists(save_path):
         os.makedirs(save_path)
+    if not os.path.exists(save_path_2):
+        os.makedirs(save_path_2)
 
     preded_label_path = img_path + "/../preded_label/" + f"{args.save_folder}"
     if not os.path.exists(preded_label_path):
@@ -1348,6 +1484,21 @@ def main(args):
     for j, (img, label) in enumerate(train_data_loader):
         pt_label, pesudo_label = label[:, 0:1], label[:, 1:2]
         # preded_label = label[:, 2:] if using_preded_label else None
+
+        # # visionlization
+        # row_num = 4
+        # fig, axes = plt.subplots(row_num, 6, figsize=(6*4, row_num*4))
+        # for i in range(row_num):
+        #     axes[i, 0].imshow(img[i,0].cpu().detach().numpy(), cmap='gray', vmin=0., vmax=1.)
+        #     axes[i, 1].imshow(pesudo_label[i,0].cpu().detach().numpy() > 0.3, cmap='gray', vmin=0., vmax=1.)
+        #     axes[i, 2].imshow(pesudo_label[i,0].cpu().detach().numpy() > 0.5, cmap='gray', vmin=0., vmax=1.)
+        #     axes[i, 3].imshow(pesudo_label[i,0].cpu().detach().numpy() > 0.8, cmap='gray', vmin=0., vmax=1.)
+        #     axes[i, 4].imshow(pesudo_label[i,0].cpu().detach().numpy(), cmap='gray', vmin=0., vmax=1.)
+        #     axes[i, 5].imshow(label[i,0].cpu().detach().numpy(), cmap='gray', vmin=0., vmax=1.)
+        # plt.tight_layout()
+        # plt.show()
+        # a = input()
+
         with torch.no_grad():
             if args.model_path != "":
                 # 预测
@@ -1360,15 +1511,17 @@ def main(args):
                 # preded_label_ = preded_label / 2 + pred / 2 if num > 1 else pred
                 # preded_label = None if args.preded_label == 0 else preded_label_
 
-                target_grad_expanded_filtered = label_evolution_v3(
-                    img, pt_label, pesudo_label, pred, pred_thre=0.5, new_pseudo_thre=0.5, 
-                    mix_a=0.4, mix_b=0.5)
+                target_grad_expanded_filtered, target_grad_expanded_filtered_2 = label_evolution_v3(
+                    img, pt_label, pesudo_label, pred, pred_thre=0.2, new_pseudo_thre=0.2, 
+                    mix_a=0.4, mix_b=0.5, plthre=args.plthre)
             else:
                 target_grad_expanded_filtered = gradient_expand_filter_v2(
                     img, pt_label, [8, 16, 32, 48, 64], view=(args.debug == 1)
                 )
+                target_grad_expanded_filtered_2 = target_grad_expanded_filtered
 
             save_pesudo_label(target_grad_expanded_filtered, save_path, names[j * 32 : j * 32 + img.shape[0]])
+            save_pesudo_label(target_grad_expanded_filtered_2, save_path_2, names[j * 32 : j * 32 + img.shape[0]])
             # if args.model_path != "":
             #     save_pesudo_label(preded_label_, preded_label_path, names[j * 32 : j * 32 + img.shape[0]])
         print(f"save batch: {j} pesudo label!")
@@ -1379,32 +1532,44 @@ def main(args):
 
 # global_hist = torch.zeros((256,), dtype=torch.int32)
 # hist_cnt = 0
+# global_hist2 = torch.zeros((256,), dtype=torch.int32)
 
 if __name__ == "__main__":
     # 将图像数据写入共享内存
     args = parse_args()
     main(args)
 
-    # print(global_hist, hist_cnt)
-
     # global_hist = global_hist.float() / hist_cnt
     # global_hist = hist_mapping(global_hist, 0.5)
-    # bins = torch.arange(256)
+    # global_hist2 = global_hist2.float() / hist_cnt
+    # global_hist2 = hist_mapping(global_hist2, 0.5)
+    # def bins_to_unit_interval(num_bins=256):
+    #     """
+    #     将 0~255 的 bin 索引映射到 [0, 1] 区间（使用左边界归一化）。
+        
+    #     返回一个形状为 (256,) 的 float tensor，表示每个 bin 在 [0,1] 中对应的位置。
+    #     """
+    #     bin_indices = torch.arange(num_bins, dtype=torch.float32)  # [0, 1, 2, ..., 255]
+    #     unit_positions = bin_indices / (num_bins - 1)              # 除以 255
+    #     return unit_positions
+    # x_positions = bins_to_unit_interval()
 
     # # 绘制直方图
-    # fig = plt.figure(figsize=(5, 5))
+    # fig = plt.figure(figsize=(1, 1))
     # # 直方图
-    # plt.plot(bins, global_hist, color='orange', label='Smoothed Histogram')
+    # plt.plot(x_positions, global_hist, color='green', label='before remapping')
+    # # 直方图
+    # plt.plot(x_positions, global_hist2, color='orange', label='after remapping')
 
     # plt.legend()
     # # plt.title('Brightness curve')
-    # plt.xlabel('Brightness Level')
-    # plt.ylabel('Pixel Count: 1-e^(-0.5*y)')
-    # plt.ylim(0, 2)  # 设置bottom和top为你想要的y轴范围
+    # plt.xlabel('Gradient Intensity')
+    # plt.ylabel('1-e^(-0.5 * PixelCount)')
+    # plt.ylim(0, 1.5)  # 设置bottom和top为你想要的y轴范围
 
-    # # # 过滤后的图像
-    # # plt.subplot(1, 3, 3)
-    # # plt.imshow(filtered_target, cmap='gray', vmax=1.0, vmin=0.0)
-    # # plt.title('Filtered Image')
+    # # 过滤后的图像
+    # plt.subplot(1, 3, 3)
+    # plt.imshow(filtered_target, cmap='gray', vmax=1.0, vmin=0.0)
+    # plt.title('Filtered Image')
 
     # plt.show()

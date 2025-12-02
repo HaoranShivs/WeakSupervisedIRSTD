@@ -264,6 +264,65 @@ class Augment_transform:
 #     return rh_idx, rw_idx
 
 
+def mask2point_n(mask, offset=3):
+    # 将mask和img转换为numpy数组
+    base_size = mask.shape[-1]
+    mask_array = np.array(mask.cpu())  # 假设mask是tensor类型
+
+    # 使用连通组件分析找到所有独立的目标区域
+    labels, num_features = scipy.ndimage.label(mask_array > 0.1)
+
+    pts_label = torch.zeros_like(mask, dtype=torch.float32)
+
+    for label_id in range(1, num_features + 1):
+        target_mask = labels == label_id
+        coords = np.argwhere(target_mask)
+
+        if len(coords) == 0:
+            continue
+
+        masked_coords = coords
+
+        # 计算原质心
+        centroid = np.mean(coords, axis=0).astype(np.int64)
+        if target_mask[centroid[0], centroid[1]] == 0:
+            corrd_diff = coords - centroid
+            min_dist_idx = np.argmin(np.sum(corrd_diff**2, axis=1))
+            centroid = coords[min_dist_idx]
+
+        # 找到离质心最近的亮点
+        dists = np.linalg.norm(masked_coords - centroid, axis=1)
+        nearest_point = masked_coords[np.argmin(dists)]
+        if nearest_point.ndim > 1:
+            nearest_point = nearest_point[0]
+
+        point_y_x = nearest_point.copy()
+
+        # 偏移：沿随机方向偏移固定距离 offset
+        if offset > 0:
+            theta = np.random.uniform(0, 2 * np.pi)
+            # 注意坐标顺序：point_y_x = [y, x]
+            ideal_y = point_y_x[0] + offset * np.sin(theta)
+            ideal_x = point_y_x[1] + offset * np.cos(theta)
+            ideal_point = np.array([ideal_y, ideal_x])
+
+            # 限制在图像范围内（防止无效坐标）
+            ideal_point = np.clip(ideal_point, 0, base_size - 1)
+
+            # 在当前连通区域中找离 ideal_point 最近的前景点
+            dists = np.linalg.norm(masked_coords - ideal_point, axis=1)
+            nearest_point_candidate = masked_coords[np.argmin(dists)]
+
+            # 仅当找到不同的点时才更新
+            if not np.array_equal(nearest_point_candidate, point_y_x):
+                point_y_x = nearest_point_candidate
+
+        # 设置最终的点标签
+        pts_label[point_y_x[0], point_y_x[1]] = 1.
+
+    return pts_label
+
+
 def mask2point(mask, img, offset=3):
     # 将mask和img转换为numpy数组
     base_size = mask.shape[-1]

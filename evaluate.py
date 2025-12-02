@@ -14,18 +14,13 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 # from models import get_model
-from dataprocess.sirst import NUDTDataset, IRSTD1kDataset
-# from net.basenet import BaseNet1, BaseNet2, LargeBaseNet, LargeBaseNet2, BaseNet3, GaussNet, GaussNet3, GaussNet4, SigmoidNet
-# from net.twotasknet import LocalSegment, TwoTaskNetWithLoss
-# from net.attentionnet import attenMultiplyUNet_withloss
-from net.basenet import BaseNet4, BaseNetWithLoss
-from utils.loss import SoftLoULoss
+from data.sirst import NUDTDataset, IRSTD1kDataset, SIRSTDataset
 from utils.lr_scheduler import *
 from utils.evaluation import SegmentationMetricTPFNFP, my_PD_FA
-from utils.logger import setup_logger
-from net.DANnet import DNANet_withloss, Res_CBAM_block
 
-
+from net.DANnet import DNANet_withloss
+from net.ACMnet import ASKCResUNet_withloss
+from net.AGPCnet import AGPCNet_withloss
 
 
 def parse_args():
@@ -42,6 +37,8 @@ def parse_args():
     parser.add_argument('--base-size', type=int, default=256, help='base size of images')
     parser.add_argument('--crop-size', type=int, default=256, help='crop size of images')
     parser.add_argument('--dataset', type=str, default='nudt', help='choose datasets')
+    
+    parser.add_argument("--model", type=str, default="", help="path of DLmodel")
 
     #
     # Net path
@@ -75,14 +72,11 @@ class Evaluate(object):
 
         # dataset
         if args.dataset == 'nudt':
-            valset = NUDTDataset(base_dir=r'W:/DataSets/ISTD/NUDT-SIRST', mode='test', base_size=args.base_size, cfg=self.cfg)
-        # elif args.dataset == 'sirstaug':
-        #     trainset = SirstAugDataset(base_dir=r'./datasets/sirst_aug',
-        #                                mode='train', base_size=args.base_size)  # base_dir=r'E:\ztf\datasets\sirst_aug'
-        #     valset = SirstAugDataset(base_dir=r'./datasets/sirst_aug',
-        #                              mode='test', base_size=args.base_size)  # base_dir=r'E:\ztf\datasets\sirst_aug'
+            valset = NUDTDataset(base_dir=r'W:/DataSets/ISTD/NUDT-SIRST', mode='test', base_size=args.base_size)
+        elif args.dataset == 'sirst':
+            valset = SIRSTDataset(base_dir=r'W:/DataSets/ISTD/SIRST', mode='test', base_size=args.base_size) 
         elif args.dataset == 'irstd1k':
-            valset = IRSTD1kDataset(base_dir=r'W:/DataSets/ISTD/IRSTD-1k', mode='test', base_size=args.base_size, cfg=self.cfg) # base_dir=r'E:\ztf\datasets\IRSTD-1k'
+            valset = IRSTD1kDataset(base_dir=r'W:/DataSets/ISTD/IRSTD-1k', mode='test', base_size=args.base_size) # base_dir=r'E:\ztf\datasets\IRSTD-1k'
         else:
             raise NotImplementedError
 
@@ -93,39 +87,35 @@ class Evaluate(object):
             os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
         self.device = torch.device("cuda:{}".format(args.gpu) if torch.cuda.is_available() else "cpu")
 
-        ## model
-        # net = BaseNet4(1, self.cfg)
-        # loss_fn = SoftLoULoss()
-        # self.net = BaseNetWithLoss(self.cfg, net, loss_fn)
-        self.net = DNANet_withloss(1, 
-                    input_channels=3, 
-                    block=Res_CBAM_block,
-                    num_blocks=[2, 2, 2, 2],
-                    nb_filter=[16, 32, 64, 128, 256],
-                    deep_supervision=True,
-                    grad_loss=True)
+        # DLmodel
+        if args.model_path != "":
+            if args.model == "dnanet":
+                model = DNANet_withloss()
+            elif args.model == "acmnet":
+                model = ASKCResUNet_withloss()
+            elif args.model == "agpcnet":
+                model = AGPCNet_withloss()
+            else:
+                raise NotImplementedError
 
-        ## load_model
-        model_path = osp.join(args.model_path, 'best.pkl')
-        self.net.load_state_dict(torch.load(model_path))
-        self.net = self.net.to(self.device)
-        self.net.eval()
-
-        # self.softiou = SoftLoULoss()
+            model.load_state_dict(torch.load(args.model_path + "/best.pkl"))
+            model = model.to(self.device)
+            model.eval()
+        self.net = model
 
         ## evaluation metrics
         self.metric = SegmentationMetricTPFNFP(nclass=1)
         self.best_miou = 0
         self.best_fmeasure = 0
+        self.best_prec = 0
+        self.best_recall = 0
         self.eval_loss = 0  # tmp values
         self.miou = 0
         self.fmeasure = 0
+        self.best_FA = 1
+        self.best_PD = 0
         self.eval_my_PD_FA = my_PD_FA()
-
-        ## visualization
-        self.best_ori_pict = None
-        self.best_seg_pict = None
-        self.best_seg_label = None
+        self.star_record_epoch_ratio = 0.5
     
 
     def validation(self):
@@ -158,6 +148,26 @@ class Evaluate(object):
         pd, fa = self.eval_my_PD_FA.get()
         print(miou, fmeasure, pd, fa)
 
+    def validation(self):
+        self.metric.reset()
+        self.eval_my_PD_FA.reset()
+        base_log = "Data: {:s}, mIoU: {:.4f}/{:.4f}, PD: {:.4f}/{:.4f}, FA: {:.6f}/{:.6f}, F1: {:.4f}/{:.4f} "
+        # base_log = "Data: {:s}, mIoU: {:.4f}/{:.4f}, F1: {:.4f}/{:.4f}, Pd:{:.4f}, Fa:{:.8f} "
+        for i, (img, label_) in enumerate(self.val_data_loader):
+            label = label_[:,0:1]
+            with torch.no_grad():
+                pred, _ = self.net(img.to(self.device, non_blocking=True), label.to(self.device, non_blocking=True))
+            out_T = pred.cpu() 
+
+            label = (label >= 0.5).float()
+            self.metric.update(label, out_T)
+            self.eval_my_PD_FA.update(out_T, label)
+        miou, prec, recall, fmeasure = self.metric.get()
+        pd, fa = self.eval_my_PD_FA.get()
+
+        print(miou, fmeasure, pd, fa)
+
+    
     def visualize(self):
         oripict = (np.array(self.best_ori_pict) * 255).astype(np.uint8)
         segpict = (np.array(self.best_seg_pict) * 255).astype(np.uint8)

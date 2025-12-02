@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 import numpy as np
 
@@ -255,7 +256,7 @@ def local_max_gradient(tensor):
 
 #     return gis
 
-def gradient_expand_one_step(gradient):
+def gradient_expand_one_step_old(gradient):
     # 创建基础卷积核
     op_0 = torch.tensor(
         [[[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]], dtype=gradient.dtype, device=gradient.device
@@ -309,7 +310,64 @@ def gradient_expand_one_step(gradient):
 
     return gradient_
 
-def boundary4gradient_expand(gradient, zoom_rate=1e9):
+def gradient_expand_one_step(gradient):
+    # 创建基础卷积核
+    op_0 = torch.tensor(
+        [[[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]], dtype=gradient.dtype, device=gradient.device
+    )
+    op_45 = torch.tensor(
+        [[[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]]], dtype=gradient.dtype, device=gradient.device
+    )
+    op_90 = torch.tensor(
+        [[[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]]], dtype=gradient.dtype, device=gradient.device
+    )
+    op_135 = torch.flip(op_45, dims=[2])
+    op_180 = torch.flip(op_0, dims=[2, 3])
+    op_225 = torch.flip(op_45, dims=[2, 3])
+    op_270 = torch.flip(op_90, dims=[2, 3])
+    op_315 = torch.flip(op_45, dims=[3])
+
+    x1_ = np.cos(15 * np.pi / 180)
+    x2_ = np.cos(30 * np.pi / 180)
+    x1 = x1_ / (x1_ + x2_)
+    x2 = x2_ / (x1_ + x2_)
+    op_15 = op_0 * x1 + op_45 * x2
+    op_30 = op_0 * x2 + op_45 * x1
+    op_60 = op_45 * x1 + op_90 * x2
+    op_75 = op_45 * x2 + op_90 * x1
+    op_105 = op_90 * x1 + op_135 * x2
+    op_120 = op_90 * x2 + op_135 * x1
+    op_150 = op_135 * x1 + op_180 * x2
+    op_165 = op_135 * x2 + op_180 * x1
+    op_195 = op_180 * x1 + op_225 * x2
+    op_210 = op_180 * x2 + op_225 * x1
+    op_240 = op_225 * x1 + op_270 * x2
+    op_255 = op_225 * x2 + op_270 * x1
+    op_285 = op_270 * x1 + op_315 * x2
+    op_300 = op_270 * x2 + op_315 * x1
+    op_330 = op_315 * x1 + op_0 * x2
+    op_345 = op_315 * x2 + op_0 * x1
+    
+    # 将所有方向梯度算子堆叠成一个大卷积核
+    all_ops = torch.cat(
+        [
+            op_0, op_15, op_30, op_45, op_60, op_75, op_90, op_105,
+            op_120, op_135, op_150, op_165, op_180, op_195, op_210,
+            op_225, op_240, op_255, op_270, op_285, op_300, op_315,
+            op_330, op_345,
+        ],
+        dim=0,
+    )  # 形状为 (24, 1, 2, 2)
+
+    direction_num = gradient.shape[1]
+    all_ops_ = all_ops[::24//direction_num]
+    
+    # 执行单次分组卷积
+    gradient_ = F.conv2d(gradient, weight=all_ops_, padding=1, groups=direction_num)  # 每个输入通道独立处理
+
+    return gradient_
+
+def boundary4gradient_expand_old(gradient, zoom_rate=1e9):
     _, C, _, _ = gradient.shape
 
     op_0 = torch.tensor(
@@ -360,6 +418,70 @@ def boundary4gradient_expand(gradient, zoom_rate=1e9):
 
     # 执行单次分组卷积
     gradient_ = F.conv2d(gradient, weight=all_ops, padding=1, groups=24)  # 每个输入通道独立处理
+
+    # 梯度比较
+    gradient_ = torch.where(gradient > gradient_, gradient, gradient_) * (gradient_ > 0.)
+
+    # 形成扩张终点
+    gradient_2 = torch.zeros_like(gradient_)
+    for i in range(C):
+        t_idx = (i + C // 2) % C
+        gradient_2[:, i] = gradient_[:, t_idx] * (-zoom_rate)
+    return gradient_2
+
+def boundary4gradient_expand(gradient, zoom_rate=1e9):
+    _, C, _, _ = gradient.shape
+
+    op_0 = torch.tensor(
+        [[[[0.0, 1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]]], dtype=gradient.dtype, device=gradient.device
+    )
+    op_45 = torch.tensor(
+        [[[[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]]], dtype=gradient.dtype, device=gradient.device
+    )
+    op_90 = torch.tensor(
+        [[[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]]]], dtype=gradient.dtype, device=gradient.device
+    )
+    op_135 = torch.flip(op_45, dims=[2])
+    op_180 = torch.flip(op_0, dims=[2, 3])
+    op_225 = torch.flip(op_45, dims=[2, 3])
+    op_270 = torch.flip(op_90, dims=[2, 3])
+    op_315 = torch.flip(op_45, dims=[3])
+    x1_ = np.cos(15 * np.pi / 180)
+    x2_ = np.cos(30 * np.pi / 180)
+    x1 = x1_ / np.sqrt(x1_**2 + x2_**2)
+    x2 = x2_ / np.sqrt(x1_**2 + x2_**2)
+    op_15 = op_0 * x1 + op_45 * x2
+    op_30 = op_0 * x2 + op_45 * x1
+    op_60 = op_45 * x1 + op_90 * x2
+    op_75 = op_45 * x2 + op_90 * x1
+    op_105 = op_90 * x1 + op_135 * x2
+    op_120 = op_90 * x2 + op_135 * x1
+    op_150 = op_135 * x1 + op_180 * x2
+    op_165 = op_135 * x2 + op_180 * x1
+    op_195 = op_180 * x1 + op_225 * x2
+    op_210 = op_180 * x2 + op_225 * x1
+    op_240 = op_225 * x1 + op_270 * x2
+    op_255 = op_225 * x2 + op_270 * x1
+    op_285 = op_270 * x1 + op_315 * x2
+    op_300 = op_270 * x2 + op_315 * x1
+    op_330 = op_315 * x1 + op_0 * x2
+    op_345 = op_315 * x2 + op_0 * x1
+
+    # 将所有方向梯度算子堆叠成一个大卷积核
+    all_ops = torch.cat(
+        [
+            op_0, op_15, op_30, op_45, op_60, op_75, op_90, op_105,
+            op_120, op_135, op_150, op_165, op_180, op_195, op_210,
+            op_225, op_240, op_255, op_270, op_285, op_300, op_315,
+            op_330, op_345,
+        ],
+        dim=0,
+    )  # 形状为 (24, 1, 2, 2)
+
+    all_ops_ = all_ops[::24//C]
+
+    # 执行单次分组卷积
+    gradient_ = F.conv2d(gradient, weight=all_ops_, padding=1, groups=C)  # 每个输入通道独立处
 
     # 梯度比较
     gradient_ = torch.where(gradient > gradient_, gradient, gradient_) * (gradient_ > 0.)

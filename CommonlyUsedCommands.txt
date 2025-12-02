@@ -1,7 +1,6 @@
 python pseudo_label_generate.py --dataset nudt --save-folder 2.99 --last-turnnum 1.35 --model-path result/20250828T18-31-57_ws4.1_1.35_nudt --debug 1
 python pseudo_label_generate.py --dataset nudt --save-folder 3.7 --preded-label 1 --last-turnnum 2.23 --model-path result/20250907T23-49-32_ws4.3_2.23_nudt
 
-
 bash run.sh -f ../IRSTD/NUDT-SIRST/trainval/pixel_pseudo_label3.8.zip -d nudt -e 200 -b 16 -s 256 -v 0 -n ws4.3_3.8 -l 10
 
 bash run.sh -f ../IRSTD/IRSTD-1k/trainval/pixel_pseudo_label0.39.zip -d irstd1k -e 100 -b 8 -s 512 -v 0 -n acmnet -r 10 -l 0.01 -m 0
@@ -9,6 +8,9 @@ bash run.sh -f ../IRSTD/NUDT-SIRST/trainval/pixel_pseudo_label0.55.zip -d nudt -
 
 bash run.sh -f ../IRSTD/NUDT-SIRST/trainval/pixel_pseudo_label1.68_dna.zip -d nudt -e 200 -b 16 -s 256 -v 0 -n dnanet -r 10 -l 0.001 -m 1
 
-bash run.sh -f ../IRSTD/NUDT-SIRST/trainval/pixel_pseudo_label1.79_acm.zip -d nudt -e 100 -b 16 -s 256 -v 0 -n acmnet -r 10 -l 0.008 -h 0.006  -m 2 -c result/20251004T01-12-22_acmnet_nudt_0.62
+bash run.sh -f ../IRSTD/NUDT-SIRST/trainval/pixel_pseudo_label1.79_acm.zip -d nudt -e 100 -b 16 -s 256 -v 0 -n acmnet -r 10 -l 0.008 -h 0.006 -m 2 -c result/20251004T01-12-22_acmnet_nudt_0.62
+bash run.sh -f ../IRSTD/IRSTD-1k/trainval/pixel_pseudo_label1.81_acm.zip -d irstd1k -e 100 -b 16 -s 256 -v 0 -n acmnet -r 10 -l 0.008 -h 0.006 -m 2 -c result/20251007T16-12-40_acmnet_irstd1k_0.63
 
-bash run.sh -f ../IRSTD/IRSTD-1k/trainval/pixel_pseudo_label1.81_acm.zip -d irstd1k -e 100 -b 16 -s 256 -v 0 -n acmnet -r 10 -l 0.008 -h 0.006  -m 2 -c result/20251007T16-12-40_acmnet_irstd1k_0.63
+bash run.sh -f ../IRSTD/NUDT-SIRST/trainval/pixel_pseudo_label0.62.zip -d nudt -e 100 -b 16 -s 256 -v 0 -n acmnet -r 20 -l 0.01 -h 0.008 -m 3
+
+mIoU: 0.6016/0.6016, PD: 0.9011/0.9541, FA: 0.00000014/0.00000002, F1: 0.7512/0.7512

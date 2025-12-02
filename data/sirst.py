@@ -69,7 +69,7 @@ class IRSTD1kDataset(Data.Dataset):
     def __getitem__(self, i):
         name = self.names[i]
         img_path = osp.join(self.data_dir, "images", name)
-        pesudo_label_path = osp.join(self.data_dir, f'pixel_pseudo_label{self.turn_num}', name)
+        pesudo_label_path = osp.join(self.data_dir, f'pixel_pseudo_label{self.turn_num}_', name)
         preded_label_path = osp.join(self.data_dir, f'preded_label/{self.turn_num}', name)
         label_path = osp.join(self.data_dir, "masks", name)
 
@@ -150,7 +150,8 @@ class NUDTDataset(Data.Dataset):
     def __getitem__(self, i):
         name = self.names[i]
         img_path = osp.join(self.data_dir, "images", name)
-        pesudo_label_path = osp.join(self.data_dir, f'pixel_pseudo_label{self.turn_num}', name)
+        pesudo_label_path = osp.join(self.data_dir, f'pixel_pseudo_label{self.turn_num}_', name)
+        # pesudo_label_path = osp.join(self.data_dir, "masks", name)
         preded_label_path = osp.join(self.data_dir, f'preded_label/{self.turn_num}', name)
         label_path = osp.join(self.data_dir, "masks", name)
 
@@ -355,7 +356,7 @@ class SIRSTDataset(Data.Dataset):
     def __getitem__(self, i):
         name = self.names[i]
         img_path = osp.join(self.data_dir, "images", name)
-        pesudo_label_path = osp.join(self.data_dir, f'pixel_pseudo_label{self.turn_num}', name)
+        pesudo_label_path = osp.join(self.data_dir, f'pixel_pseudo_label{self.turn_num}_', name)
         preded_label_path = osp.join(self.data_dir, f'preded_label/{self.turn_num}', name)
         label_path = osp.join(self.data_dir, "masks", name)
 

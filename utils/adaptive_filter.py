@@ -226,8 +226,7 @@ def otsu_threshold(image):
 
     # 统计直方图：每个灰度级的像素数量
     hist, _ = np.histogram(image, bins=256, range=(0, 256))
-    total_pixels = image.size
-
+    total_pixels = image.shape[-1] * image.shape[-2]
     # 总灰度和
     sum_total = 0.0
     for i in range(256):
@@ -261,6 +260,138 @@ def otsu_threshold(image):
 
     return int(best_threshold), variances
  
+
+import heapq
+from typing import Tuple, List
+
+def region_growing_priority_dynamic(
+    response: np.ndarray,
+    fg_seeds: np.ndarray,
+    bg_seeds: np.ndarray,
+    tolerance: float = 0.2,          # 最大方差增长容忍度（可调整）
+    max_pixels: int = None
+) -> np.ndarray:
+    """
+    Enhanced Region Growing with:
+      - Dynamic region mean update
+      - Priority queue (grow most confident pixels first)
+      - Variance-growth-inspired acceptance criterion
+
+    Args:
+        response: (H, W), float in (0, 1)
+        fg_seeds, bg_seeds: (H, W), bool
+        tolerance: max allowed std (or variance proxy) for growth
+        max_pixels: optional cap to avoid overgrowth
+
+    Returns:
+        mask: (H, W), bool (True = foreground)
+    """
+    H, W = response.shape
+    mask = np.full((H, W), -1, dtype=np.int8)  # -1: unlabeled
+    visited = np.zeros((H, W), dtype=bool)
+
+    # Region stats: [sum, sum_sq, count] for mean and variance
+    fg_sum = fg_sum_sq = fg_count = 0.0
+    bg_sum = bg_sum_sq = bg_count = 0.0
+
+    # Priority queues: (-priority, y, x, region_id)
+    # We use negative priority because heapq is min-heap
+    fg_pq: List[Tuple[float, int, int]] = []
+    bg_pq: List[Tuple[float, int, int]] = []
+
+    neighbors = [(-1,-1), (-1,0), (-1,1),
+                 (0,-1),           (0,1),
+                 (1,-1),  (1,0),   (1,1)]
+
+    def push_neighbors(y, x, region_id):
+        for dy, dx in neighbors:
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < H and 0 <= nx < W and not visited[ny, nx]:
+                visited[ny, nx] = True
+                r_val = response[ny, nx]
+                if region_id == 1:
+                    heapq.heappush(fg_pq, (-r_val, ny, nx))  # higher response = higher priority for fg
+                else:
+                    heapq.heappush(bg_pq, (-(1 - r_val), ny, nx))  # lower response = higher priority for bg
+
+    # Initialize seeds
+    for y, x in np.argwhere(fg_seeds):
+        if visited[y, x]:
+            continue
+        visited[y, x] = True
+        mask[y, x] = 1
+        r_val = response[y, x]
+        fg_sum += r_val
+        fg_sum_sq += r_val * r_val
+        fg_count += 1
+        push_neighbors(y, x, 1)
+
+    for y, x in np.argwhere(bg_seeds):
+        if visited[y, x]:
+            continue
+        visited[y, x] = True
+        mask[y, x] = 0
+        r_val = response[y, x]
+        bg_sum += r_val
+        bg_sum_sq += r_val * r_val
+        bg_count += 1
+        push_neighbors(y, x, 0)
+
+    # Helper to compute variance (with smoothing to avoid div by zero)
+    def compute_variance(s, s2, n):
+        if n == 0:
+            return 0.0
+        mean = s / n
+        return (s2 / n - mean * mean)
+
+    # Grow regions alternately or by priority
+    while (fg_pq or bg_pq) and (max_pixels is None or (fg_count + bg_count) < max_pixels):
+        # Process one pixel from the queue with highest priority
+        fg_ready = fg_pq and (fg_count == 0 or compute_variance(fg_sum, fg_sum_sq, fg_count) < tolerance)
+        bg_ready = bg_pq and (bg_count == 0 or compute_variance(bg_sum, bg_sum_sq, bg_count) < tolerance)
+
+        if not fg_ready and not bg_ready:
+            break
+
+        # Choose which queue to pop from: compare top priorities
+        fg_priority = -fg_pq[0][0] if fg_pq else -np.inf
+        bg_priority = -bg_pq[0][0] if bg_pq else -np.inf
+
+        if fg_priority >= bg_priority and fg_ready:
+            _, y, x = heapq.heappop(fg_pq)
+            r_val = response[y, x]
+            # Accept if it doesn't blow up variance too much
+            new_fg_var = compute_variance(fg_sum + r_val, fg_sum_sq + r_val*r_val, fg_count + 1)
+            current_fg_var = compute_variance(fg_sum, fg_sum_sq, fg_count)
+            if new_fg_var - current_fg_var <= tolerance or fg_count == 0:
+                mask[y, x] = 1
+                fg_sum += r_val
+                fg_sum_sq += r_val * r_val
+                fg_count += 1
+                push_neighbors(y, x, 1)
+            # else: reject (leave unlabeled for now)
+
+        elif bg_ready:
+            _, y, x = heapq.heappop(bg_pq)
+            r_val = response[y, x]
+            new_bg_var = compute_variance(bg_sum + r_val, bg_sum_sq + r_val*r_val, bg_count + 1)
+            current_bg_var = compute_variance(bg_sum, bg_sum_sq, bg_count)
+            if new_bg_var - current_bg_var <= tolerance or bg_count == 0:
+                mask[y, x] = 0
+                bg_sum += r_val
+                bg_sum_sq += r_val * r_val
+                bg_count += 1
+                push_neighbors(y, x, 0)
+            # else: reject
+
+    # Final assignment for unlabeled pixels
+    unlabeled = (mask == -1)
+    if np.any(unlabeled):
+        # You can change this to background-only: mask[unlabeled] = 0
+        mask[unlabeled] = (response[unlabeled] > 0.5).astype(np.int8)
+
+    return mask.astype(bool)
+
 def robust_min_max(tensor, threshold=0.1, percentile=0.1):
     """
     Args:

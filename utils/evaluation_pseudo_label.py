@@ -22,7 +22,7 @@ def evaluate_pseudo_mask(pesudo_mask_dir, mask_dir):
 
         mask, pesudo_mask = np.array(mask).astype(np.float32) / 255., np.array(pesudo_mask).astype(np.float32) / 255.
         # pesudo_mask 设置阈值使得其为二值图
-        pesudo_mask = (pesudo_mask > 0.1).astype(np.float32)
+        pesudo_mask = (pesudo_mask > 0.3).astype(np.float32)
         
         metric.update(mask, pesudo_mask)
 

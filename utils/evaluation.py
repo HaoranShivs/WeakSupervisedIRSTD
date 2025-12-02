@@ -5,6 +5,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from skimage import measure
+
 # __all__ = ['SegmentationMetricTPFNFP']
 
 def get_miou_prec_recall_fscore(total_tp, total_fp, total_fn):
@@ -99,53 +101,147 @@ def batch_tp_fp_fn(predict, target, nclass):
     return area_tp, area_fp, area_fn
 
 
+# class my_PD_FA(object):
+#     def __init__(self, ):
+#         self.reset()
+
+#     def update(self, pred, label):
+#         # max_pred= np.max(pred)
+#         # max_label = np.max(label)
+#         pred = np.array(pred)
+#         label = np.array(label)
+#         pred = pred / np.max(pred) # normalize output to 0-1
+#         label = label.astype(np.uint8)
+
+#         # analysis target number
+#         num_labels, labels, _, centroids = cv2.connectedComponentsWithStats(label)
+#         #assert num_labels > 1
+#         if(num_labels <= 1):
+#             return
+
+#         # get masks and update background area and targets number
+#         back_mask = labels == 0
+#         tmp_back_area = np.sum(back_mask)
+#         self.background_area += tmp_back_area
+#         self.target_nums += (num_labels - 1)
+
+
+#         pred_binary = pred > 0.5
+
+#         # update false detection
+#         tmp_false_detect = np.sum(np.logical_and(back_mask, pred_binary))
+#         assert tmp_false_detect <= tmp_back_area
+#         self.false_detect += tmp_false_detect
+
+#         # update true detection, there maybe multiple targets
+#         for t in range(1, num_labels):
+#             target_mask = labels == t
+#             self.true_detect += np.sum(np.logical_and(target_mask, pred_binary)) > 0
+
+#     def get(self):
+#         FA = self.false_detect / self.background_area  #
+#         PD = self.true_detect / self.target_nums       #
+#         return PD,FA
+
+#     def get_all(self):
+#         return self.false_detect, self.background_area, self.true_detect, self.target_nums
+
+#     def reset(self):
+#         self.false_detect = 0
+#         self.true_detect = 0
+#         self.background_area = 0
+#         self.target_nums = 0
+
+import numpy as np
+from skimage import measure
+
+
 class my_PD_FA(object):
-    def __init__(self, ):
+    def __init__(self):
         self.reset()
 
     def update(self, pred, label):
-        # max_pred= np.max(pred)
-        # max_label = np.max(label)
-        pred = np.array(pred)
-        label = np.array(label)
-        pred = pred / np.max(pred) # normalize output to 0-1
-        label = label.astype(np.uint8)
+        # Handle PyTorch tensors or NumPy arrays
+        pred = np.array(pred).squeeze()
+        label = np.array(label).squeeze()
 
-        # analysis target number
-        num_labels, labels, _, centroids = cv2.connectedComponentsWithStats(label)
-        #assert num_labels > 1
-        if(num_labels <= 1):
+        if pred.ndim == 2 and label.ndim == 2:
+            self._update_single(pred, label)
+        elif pred.ndim == 3 and label.ndim == 3 and pred.shape[0] == label.shape[0]:
+            for i in range(pred.shape[0]):
+                self._update_single(pred[i], label[i])
+        else:
+            raise ValueError(
+                f"Unsupported input shapes: pred.shape={pred.shape}, label.shape={label.shape}. "
+                "Expected (H, W) or (B, H, W)."
+            )
+
+    def _update_single(self, pred, label):
+        if pred.ndim != 2 or label.ndim != 2:
+            raise ValueError(f"Expected 2D inputs, got pred.shape={pred.shape}, label.shape={label.shape}")
+
+        # Normalize prediction
+        if pred.max() > 0:
+            pred = pred / pred.max()
+        pred_binary = pred > 0.5
+        label_binary = (label > 0).astype(np.uint8)
+
+        # Compute background area (for FA rate)
+        background_area = np.sum(~label_binary)
+        self.total_background_area += background_area
+
+        # If no ground truth targets
+        if not np.any(label_binary):
+            # All predicted pixels in background are false alarms
+            fa_pixels = np.sum(pred_binary)
+            self.total_fa_pixels += fa_pixels
             return
 
-        # get masks and update background area and targets number
-        back_mask = labels == 0
-        tmp_back_area = np.sum(back_mask)
-        self.background_area += tmp_back_area
-        self.target_nums += (num_labels - 1)
+        # Use your matching logic to find unmatched predictions
+        image = measure.label(pred_binary, connectivity=2)
+        coord_image = list(measure.regionprops(image))
+        label_img = measure.label(label_binary, connectivity=2)
+        coord_label = measure.regionprops(label_img)
 
+        matched_pred_indices = set()
+        detected = 0
 
-        pred_binary = pred > 0.5
+        for i, gt_prop in enumerate(coord_label):
+            centroid_gt = np.array(gt_prop.centroid)
+            for j, pred_prop in enumerate(coord_image):
+                if j in matched_pred_indices:
+                    continue
+                centroid_pred = np.array(pred_prop.centroid)
+                if np.linalg.norm(centroid_pred - centroid_gt) < 3:
+                    matched_pred_indices.add(j)
+                    detected += 1
+                    break
 
-        # update false detection
-        tmp_false_detect = np.sum(np.logical_and(back_mask, pred_binary))
-        assert tmp_false_detect <= tmp_back_area
-        self.false_detect += tmp_false_detect
+        # Sum area of UNMATCHED prediction components
+        fa_pixels = 0
+        for j, pred_prop in enumerate(coord_image):
+            if j not in matched_pred_indices:
+                fa_pixels += pred_prop.area
 
-        # update true detection, there maybe multiple targets
-        for t in range(1, num_labels):
-            target_mask = labels == t
-            self.true_detect += np.sum(np.logical_and(target_mask, pred_binary)) > 0
+        self.total_fa_pixels += fa_pixels
+        self.total_targets += len(coord_label)
+        self.total_true_detect += detected
 
     def get(self):
-        FA = self.false_detect / self.background_area  #
-        PD = self.true_detect / self.target_nums       #
-        return PD,FA
+        Pd = self.total_true_detect / self.total_targets if self.total_targets > 0 else 0.0
+        Fa = self.total_fa_pixels / self.total_background_area if self.total_background_area > 0 else 0.0
+        return Pd, Fa
 
     def get_all(self):
-        return self.false_detect, self.background_area, self.true_detect, self.target_nums
+        return (
+            self.total_fa_pixels,
+            self.total_background_area,
+            self.total_true_detect,
+            self.total_targets
+        )
 
     def reset(self):
-        self.false_detect = 0
-        self.true_detect = 0
-        self.background_area = 0
-        self.target_nums = 0
+        self.total_fa_pixels = 0
+        self.total_background_area = 0
+        self.total_true_detect = 0
+        self.total_targets = 0
