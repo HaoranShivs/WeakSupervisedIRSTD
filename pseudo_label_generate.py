@@ -1,6 +1,4 @@
 import torch
-import torch.nn.functional as F
-import torchvision.transforms.functional as TF
 import torch.utils.data as Data
 
 import numpy as np
@@ -11,15 +9,13 @@ from scipy.signal import find_peaks as fpk
 from PIL import Image
 import matplotlib.pyplot as plt
 from argparse import ArgumentParser
-import time
-from multiprocessing import shared_memory
+
 import os
 import os.path as osp
 import yaml
-import struct
 
 from utils.refine import dilate_mask, erode_mask
-from utils.utils import compute_weighted_centroids, mask_diameter, farthest_point_sampling, iou_score, check_cube
+from utils.utils import iou_score, check_cube
 from utils.ICF import initial_target, evolve_target
 from utils.grad_expand_utils import *
 from utils.adaptive_filter import *
@@ -30,18 +26,8 @@ from net.DANnet import DNANet_withloss
 from net.ACMnet import ASKCResUNet_withloss
 from net.AGPCnet import AGPCNet_withloss
 from data.sirst import IRSTD1kDataset, NUDTDataset, SIRSTDataset
-from net.attentionnet import attenMultiplyUNet_withloss
 
-from torch.profiler import profile, record_function, ProfilerActivity
-
-# 设置pytorch打印选项
-torch.set_printoptions(
-    threshold=1024,  # 最大显示元素数量为10
-    linewidth=320,  # 每行的最大字符数为120
-    precision=2,  # 小数点后的数字精度为4
-    edgeitems=20,  # 每行显示的边缘元素数量为5
-    sci_mode=True,  # 不使用科学计数法
-)
+# from torch.profiler import profile, record_function, ProfilerActivity
 
 cfg_path = "cfg.yaml"
 with open(cfg_path) as f:
@@ -880,12 +866,12 @@ def gradient_expand_filter_v2(img, pt_label, region_size, view=False):
 
         final_target, scores, coors = finalize_target(targets, view)
 
-        # target_filtered__ = initial_target(final_target, fg_thre=0.5, bg_thre=0.1)
+        target_filtered__ = initial_target(final_target, fg_thre=0.5, bg_thre=0.1)
         # otsu_thre, _ = otsu_threshold(final_target * 255)
         # target_filtered__ = final_target * 255 > otsu_thre
-        target_filtered__ = region_growing_priority_dynamic(final_target.numpy(), 
-                                                            (final_target > 0.5).numpy(), 
-                                                            (final_target < 0.05).numpy(), )
+        # target_filtered__ = region_growing_priority_dynamic(final_target.numpy(), 
+        #                                                     (final_target > 0.5).numpy(), 
+        #                                                     (final_target < 0.05).numpy(), )
         target_filtered__ = torch.tensor(target_filtered__)
         target_filtered_by_points = filter_mask_by_points(
             target_filtered__, pt_label[b, 0, coors[0] : coors[2], coors[1] : coors[3]]
@@ -1419,6 +1405,7 @@ def main(args):
             augment=False,
             turn_num=args.last_turnnum,
             file_name=file_name,
+            offset=3,
         )
         img_path = "W:/DataSets/ISTD/NUDT-SIRST/trainval/images"
     elif args.dataset == "sirst":
@@ -1432,6 +1419,7 @@ def main(args):
             augment=False,
             turn_num=args.last_turnnum,
             file_name=file_name,
+            offset=3,
         )
         img_path = "W:/DataSets/ISTD/SIRST/trainval/images"
     elif args.dataset == "irstd1k":
@@ -1445,6 +1433,7 @@ def main(args):
             augment=False,
             turn_num=args.last_turnnum,
             file_name=file_name,
+            offset=3,
         )
         img_path = "W:/DataSets/ISTD/IRSTD-1k/trainval/images"
     else:
