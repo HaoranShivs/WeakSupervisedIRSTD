@@ -1194,14 +1194,14 @@ def label_evolution_v3(image, pt_label, pesudo_label, pred, pred_thre=0.01, new_
             output[b, 0, coors[0] : coors[1], coors[2] : coors[3]], final_target
         )
 
-        # 显示结果
-        plt.figure(figsize=(30, 6))
-        plt.subplot(151), plt.imshow(region[0,0], cmap='gray')
-        plt.subplot(152), plt.imshow(target_, cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(153), plt.imshow(output[b, 0, coors[0] : coors[1], coors[2] : coors[3]] > 0.3, cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(154), plt.imshow(pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
-        plt.subplot(155), plt.imshow(pred[b, 0, coors[0] : coors[1], coors[2] : coors[3]], cmap='gray', vmax=1., vmin=0.)
-        plt.show()
+        # # 显示结果
+        # plt.figure(figsize=(30, 6))
+        # plt.subplot(151), plt.imshow(region[0,0], cmap='gray')
+        # plt.subplot(152), plt.imshow(target_, cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(153), plt.imshow(output[b, 0, coors[0] : coors[1], coors[2] : coors[3]], cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(154), plt.imshow(pesudo_label[b, 0, coors[0]:coors[1], coors[2]:coors[3]], cmap='gray', vmax=1., vmin=0.)
+        # plt.subplot(155), plt.imshow(pred[b, 0, coors[0] : coors[1], coors[2] : coors[3]], cmap='gray', vmax=1., vmin=0.)
+        # plt.show()
 
     output = output * mix_b + pesudo_label * (1-mix_b)
     output_ = (output > plthre).float()
@@ -1405,7 +1405,7 @@ def main(args):
             augment=False,
             turn_num=args.last_turnnum,
             file_name=file_name,
-            offset=3,
+            offset=10,
         )
         img_path = "W:/DataSets/ISTD/NUDT-SIRST/trainval/images"
     elif args.dataset == "sirst":
@@ -1419,7 +1419,7 @@ def main(args):
             augment=False,
             turn_num=args.last_turnnum,
             file_name=file_name,
-            offset=3,
+            offset=10,
         )
         img_path = "W:/DataSets/ISTD/SIRST/trainval/images"
     elif args.dataset == "irstd1k":
@@ -1433,7 +1433,7 @@ def main(args):
             augment=False,
             turn_num=args.last_turnnum,
             file_name=file_name,
-            offset=3,
+            offset=10,
         )
         img_path = "W:/DataSets/ISTD/IRSTD-1k/trainval/images"
     else:
