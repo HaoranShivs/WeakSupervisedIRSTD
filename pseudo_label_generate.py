@@ -1,3 +1,10 @@
+"""
+Pseudo Label Generation Module
+
+This module provides functions for generating and evolving pseudo labels
+for weakly supervised learning tasks, particularly for small target detection.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,34 +13,60 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from utils.sum_val_filter import min_pool2d
-from utils.utils import compute_mask_pixel_distances_with_coords, extract_local_windows, min_positive_per_local_area, \
-    compute_local_extremes, compute_weighted_mean_variance, random_select_from_prob_mask, select_complementary_pixels, \
-    get_connected_mask_long_side, keep_negative_by_top2_magnitude_levels, add_uniform_points_grid_cuda, big_num_mask, add_uniform_points_v2, \
-    add_uniform_points_v3, add_uniform_points_with_logits, get_min_value_outermost_mask, periodic_function, smooth_optim, bilateral_smooth_logits, \
-    compute_weighted_mean_variance_fast, get_distance_matrix_64
+from utils.utils import (
+    compute_mask_pixel_distances_with_coords,
+    extract_local_windows,
+    min_positive_per_local_area,
+    compute_local_extremes,
+    compute_weighted_mean_variance,
+    random_select_from_prob_mask,
+    select_complementary_pixels,
+    get_connected_mask_long_side,
+    keep_negative_by_top2_magnitude_levels,
+    add_uniform_points_grid_cuda,
+    big_num_mask,
+    add_uniform_points_v2,
+    add_uniform_points_v3,
+    add_uniform_points_with_logits,
+    get_min_value_outermost_mask,
+    periodic_function,
+    smooth_optim,
+    bilateral_smooth_logits,
+    compute_weighted_mean_variance_fast,
+    get_distance_matrix_64
+)
 from utils.adaptive_filter import filter_mask_by_points, robust_min_max
 from utils.refine import dilate_mask, erode_mask
 
 from typing import Tuple, Optional, Dict, List
 
 
-def initial_target_v1(grad_intensity: torch.Tensor, fg_thre: float = 0.5, bg_thre: float = 0.1):
+def initialize_target_v1(
+    grad_intensity: torch.Tensor,
+    fg_threshold: float = 0.5,
+    bg_threshold: float = 0.1
+) -> torch.Tensor:
     """
+    Initialize target mask using iterative refinement (version 1).
+    
     Args:
-        grad_intensity: 输入图像 [H, W]
-        threshold: 阈值，用于初步划分种子点是否为有效种子点，如前景种子点需>threshold，背景种子点需<threshold
+        grad_intensity: Input gradient intensity image of shape [H, W]
+        fg_threshold: Threshold for foreground seed initialization
+        bg_threshold: Threshold for background seed initialization
+    
     Returns:
-        seed_cofidence: 概率图 [H, W, 2]
+        Binary mask of shape [H, W] on CPU
     """
     grad_intensity = grad_intensity.cuda()
     H, W = grad_intensity.shape
-    # Precompute coords_grid once (outside evolve_target or at beginning)
+    
+    # Precompute coordinate grid
     y_coords, x_coords = torch.meshgrid(
         torch.arange(H, device=grad_intensity.device),
         torch.arange(W, device=grad_intensity.device),
         indexing='ij'
     )
-    coords_grid = torch.stack([y_coords, x_coords], dim=-1).view(-1, 2).float()  # [HW, 2]
+    coords_grid = torch.stack([y_coords, x_coords], dim=-1).view(-1, 2).float()
 
     pixel_num_min = 7
     # 初始化fg_area, bg_area
